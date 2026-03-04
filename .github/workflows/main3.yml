@@ -1,4 +1,4 @@
-name: experimental
+name: Torrent Queue Processor
 
 on:
   workflow_dispatch:
@@ -45,7 +45,7 @@ jobs:
         if: env.found == 'true'
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2
-          pip install huggingface_hub
+          pip install huggingface_hub guessit requests
 
       - name: Download Torrent
         if: env.found == 'true'
@@ -68,6 +68,9 @@ jobs:
           # 3. Update the target path for FFmpeg
           VIDEO_FILE="upload_dir/original/$(basename "$RAW_VIDEO_FILE")"
           echo "Processing from new location: $VIDEO_FILE..."
+          
+          # Export path for the TMDB metadata generator
+          echo "FINAL_VIDEO_PATH=$VIDEO_FILE" >> $GITHUB_ENV
 
           STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
 
@@ -119,7 +122,6 @@ jobs:
           echo "Running FFmpeg with native C-level reporting..."
           export FFREPORT="file=ffmpeg_native_crash.log:level=32"
           
-          # Notice the output path is now upload_dir/stream/
           if ! ffmpeg -fflags +genpts -i "$VIDEO_FILE" \
             $AUDIO_MAPS \
             -c:v copy $AUDIO_ENCODING \
@@ -197,6 +199,82 @@ jobs:
           HF_BASE="https://huggingface.co/datasets/${{ secrets.HF_REPO }}/resolve/main/${VIDEO_NAME}/stream/"
           find upload_dir/stream -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
           echo "✅ All relative paths and embedded URIs converted to absolute URLs."
+
+      - name: Generate Metadata JSON
+        if: env.found == 'true'
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: |
+          python -c "
+          import os, json, requests
+          from guessit import guessit
+
+          file_path = os.environ.get('FINAL_VIDEO_PATH', '')
+          filename = os.path.basename(file_path)
+          
+          print(f'Extracting metadata from: {filename}')
+
+          # 1. Parse the torrent scene release name
+          g = guessit(filename)
+          title = g.get('title', 'Unknown Title')
+          year = g.get('year', '')
+          quality = g.get('screen_size', 'Unknown Quality')
+          source = g.get('format', 'Unknown Source')
+          
+          # Catch IMAX releases
+          if 'other' in g and 'IMAX' in g.get('other', []):
+              source = 'IMAX ' + source
+
+          # 2. Calculate Exact File Size
+          try:
+              size_bytes = os.path.getsize(file_path)
+              size_gb = round(size_bytes / (1024**3), 2)
+              size_str = f'{size_gb} GB'
+          except Exception as e:
+              size_str = 'Unknown'
+
+          metadata = {
+              'original_filename': filename,
+              'parsed_title': title,
+              'year': year,
+              'season': g.get('season', ''),
+              'episode': g.get('episode', ''),
+              'quality': quality,
+              'source': source,
+              'size_gb': size_str,
+              'official_title': title,
+              'poster_url': '',
+              'plot_overview': ''
+          }
+
+          # 3. Fetch Official Data from TMDB
+          tmdb_key = os.environ.get('TMDB_API_KEY')
+          if tmdb_key and title != 'Unknown Title':
+              m_type = 'tv' if 'season' in g or 'episode' in g else 'movie'
+              
+              search_url = f'https://api.themoviedb.org/3/search/{m_type}?api_key={tmdb_key}&query={title}'
+              if year:
+                  search_url += f'&year={year}' if m_type == 'movie' else f'&first_air_date_year={year}'
+              
+              try:
+                  res = requests.get(search_url).json()
+                  if res.get('results') and len(res['results']) > 0:
+                      best_match = res['results'][0]
+                      
+                      metadata['official_title'] = best_match.get('title') or best_match.get('name')
+                      metadata['plot_overview'] = best_match.get('overview', '')
+                      
+                      if best_match.get('poster_path'):
+                          metadata['poster_url'] = f'https://image.tmdb.org/t/p/w600_and_h900_bestv2{best_match.get(\"poster_path\")}'
+              except Exception as e:
+                  print('TMDB API fetch failed:', e)
+
+          # 4. Save to metadata.json in the root of the upload directory
+          with open('upload_dir/metadata.json', 'w') as f:
+              json.dump(metadata, f, indent=4)
+          
+          print('✅ Metadata successfully generated and saved.')
+          "
 
       - name: Upload Output to Hugging Face
         if: env.found == 'true'

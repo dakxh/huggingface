@@ -1,7 +1,6 @@
 name: Torrent Queue Processor
 
-on:
-  
+on:  
   workflow_dispatch:
 
 permissions:
@@ -16,17 +15,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Free Up Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
 
       - name: Find and Rename Text File
         id: queue_manager

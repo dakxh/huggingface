@@ -1,0 +1,142 @@
+name: Torrent Queue Processor
+
+on:
+  push:
+    paths:
+      - '*.torrent'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  process-queue:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free Up Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Find First Torrent File
+        id: queue_manager
+        run: |
+          TORRENT_FILE=$(ls -1 *.torrent 2>/dev/null | head -n 1)
+          
+          if [ -z "$TORRENT_FILE" ]; then
+            echo "Queue is empty. No .torrent files found."
+            echo "found=false" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          echo "Target acquired: $TORRENT_FILE"
+          echo "TORRENT_FILE=$TORRENT_FILE" >> $GITHUB_ENV
+          
+          VIDEO_NAME=$(basename "$TORRENT_FILE" .torrent)
+          echo "VIDEO_NAME=$VIDEO_NAME" >> $GITHUB_ENV
+          echo "found=true" >> $GITHUB_ENV
+
+      - name: Install Dependencies
+        if: env.found == 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2
+          pip install huggingface_hub
+
+      - name: Download Torrent
+        if: env.found == 'true'
+        run: |
+          mkdir -p workspace
+          echo "Downloading $TORRENT_FILE..."
+          aria2c --seed-time=0 "$TORRENT_FILE" -d workspace/
+
+      - name: Process Video, Audio, and Subs into HLS
+        if: env.found == 'true'
+        run: |
+          mkdir -p hls_output
+          VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | head -n 1)
+          echo "Processing $VIDEO_FILE..."
+
+          STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
+
+          AUDIO_MAPS="-map 0:v:0"
+          VAR_STREAM_MAP="v:0,agroup:audio "
+          A_IDX=0
+          LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
+
+          while IFS=',' read -r index ctype lang title; do
+            if [[ "$ctype" == "audio" ]]; then
+              if [[ "$lang $title" =~ $LANG_REGEX ]]; then
+                echo "Mapping Audio $index: lang='${lang}', title='${title}'"
+                AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
+                VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
+                ((A_IDX++))
+              fi
+            fi
+          done <<< "$STREAMS"
+
+          if [[ "$A_IDX" -eq 0 ]]; then
+            echo "Fallback: No matching languages found. Using default audio."
+            AUDIO_MAPS="$AUDIO_MAPS -map 0:a:0"
+            VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
+          fi
+
+          ffmpeg -i "$VIDEO_FILE" \
+            $AUDIO_MAPS \
+            -c:v copy -c:a copy \
+            -f hls \
+            -var_stream_map "$VAR_STREAM_MAP" \
+            -master_pl_name master.m3u8 \
+            -hls_time 10 \
+            -hls_list_size 0 \
+            hls_output/stream_%v.m3u8
+            
+          while IFS=',' read -r index ctype lang title; do
+            if [[ "$ctype" == "subtitle" ]]; then
+              if [[ "$lang $title" =~ $LANG_REGEX ]]; then
+                echo "Extracting Subtitle $index: lang='${lang}'"
+                ffmpeg -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/subs_${index}_${lang:-und}.vtt" || true
+              fi
+            fi
+          done <<< "$STREAMS"
+
+      - name: Upload Output to Hugging Face
+        if: env.found == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ secrets.HF_REPO }}
+        run: |
+          python -c "
+          from huggingface_hub import HfApi
+          import os
+          api = HfApi()
+          api.upload_folder(
+              folder_path='hls_output',
+              path_in_repo=os.environ.get('VIDEO_NAME'),
+              repo_id=os.environ.get('HF_REPO'),
+              repo_type='dataset',
+              token=os.environ.get('HF_TOKEN')
+          )
+          "
+
+      - name: Commit Deletion of Processed Torrent
+        if: env.found == 'true' && success()
+        run: |
+          echo "Pipeline successful. Removing $TORRENT_FILE from the queue..."
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git rm "$TORRENT_FILE"
+          git commit -m "Auto-Queue: Processed and removed $TORRENT_FILE"
+          git push

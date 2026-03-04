@@ -1,4 +1,4 @@
-name: exp
+name: Torrent Queue Processor
 
 on:
   push:
@@ -18,6 +18,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Free Up Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
       - name: Find and Rename Text File
         id: queue_manager
@@ -78,7 +89,8 @@ jobs:
                 echo "Mapping Audio $index: lang='${lang}', title='${title}'"
                 AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
-                ((A_IDX++))
+                # THE FIX: Safe arithmetic that prevents bash from throwing exit code 1
+                A_IDX=$((A_IDX + 1))
               fi
             fi
           done <<< "$STREAMS"
@@ -124,14 +136,10 @@ jobs:
             fi
           done <<< "$STREAMS"
 
-          # --- THE HUGGING FACE REDIRECT FIX (UPDATED) ---
+          # --- THE HUGGING FACE REDIRECT FIX ---
           echo "Fixing Hugging Face URL redirect bug..."
           HF_BASE="https://huggingface.co/datasets/${{ secrets.HF_REPO }}/resolve/main/${VIDEO_NAME}/"
-          
-          # 1. Prepend to standalone lines (chunks & main streams)
-          # 2. Inject directly into URI="..." attributes (audio, subs, init files)
           find hls_output -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
-          
           echo "✅ All relative paths and embedded URIs converted to absolute URLs."
 
       - name: Upload Output to Hugging Face

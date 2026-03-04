@@ -69,6 +69,7 @@ jobs:
           echo "Downloading $TORRENT_FILE..."
           aria2c --seed-time=0 "$TORRENT_FILE" -d workspace/
 
+      # 6. Process into HLS format (Fixed for HEVC/Atmos & MKV Cover Art)
       - name: Process Video, Audio, and Subs into HLS
         if: env.found == 'true'
         run: |
@@ -78,7 +79,8 @@ jobs:
 
           STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
 
-          AUDIO_MAPS="-map 0:v:0"
+          # Use 0:V:0 (Capital V) to ignore MKV cover art/thumbnails and grab the actual movie
+          AUDIO_MAPS="-map 0:V:0"
           VAR_STREAM_MAP="v:0,agroup:audio "
           A_IDX=0
           LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
@@ -100,10 +102,15 @@ jobs:
             VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
           fi
 
+          # Trim trailing space from map to prevent ffmpeg syntax errors
+          VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
+
+          # Added fmp4 segment type to natively handle HEVC (H.265) and Atmos
           ffmpeg -i "$VIDEO_FILE" \
             $AUDIO_MAPS \
             -c:v copy -c:a copy \
             -f hls \
+            -hls_segment_type fmp4 \
             -var_stream_map "$VAR_STREAM_MAP" \
             -master_pl_name master.m3u8 \
             -hls_time 10 \
@@ -114,6 +121,7 @@ jobs:
             if [[ "$ctype" == "subtitle" ]]; then
               if [[ "$lang $title" =~ $LANG_REGEX ]]; then
                 echo "Extracting Subtitle $index: lang='${lang}'"
+                # The || true prevents the whole workflow from crashing if a subtitle track is an incompatible image format
                 ffmpeg -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/subs_${index}_${lang:-und}.vtt" || true
               fi
             fi

@@ -58,7 +58,7 @@ jobs:
         if: env.found == 'true'
         run: |
           mkdir -p hls_output
-          VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | head -n 1)
+          VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec stat -c "%s %n" {} + | sort -nr | head -n 1 | cut -d' ' -f2-)
           echo "Processing $VIDEO_FILE..."
 
           STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')

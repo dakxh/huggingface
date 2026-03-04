@@ -1,9 +1,6 @@
 name: Torrent Queue Processor
 
 on:
-  push:
-    paths:
-      - '*.torrent'
   workflow_dispatch:
 
 permissions:
@@ -30,21 +27,32 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - name: Find First Torrent File
+      - name: Find and Rename Text File
         id: queue_manager
         run: |
-          TORRENT_FILE=$(ls -1 *.torrent 2>/dev/null | head -n 1)
+          # Find the first .txt file
+          TXT_FILE=$(ls -1 *.txt 2>/dev/null | head -n 1)
           
-          if [ -z "$TORRENT_FILE" ]; then
-            echo "Queue is empty. No .torrent files found."
+          if [ -z "$TXT_FILE" ]; then
+            echo "Queue is empty. No .txt files found."
             echo "found=false" >> $GITHUB_ENV
             exit 0
           fi
           
-          echo "Target acquired: $TORRENT_FILE"
-          echo "TORRENT_FILE=$TORRENT_FILE" >> $GITHUB_ENV
+          echo "Target acquired: $TXT_FILE"
           
-          VIDEO_NAME=$(basename "$TORRENT_FILE" .torrent)
+          # Extract base name (handles both 'movie.torrent.txt' and 'movie.txt')
+          BASE_NAME=$(basename "$TXT_FILE" .txt)
+          VIDEO_NAME=${BASE_NAME%.torrent} # Strips .torrent if it was included in the name
+          TORRENT_FILE="${VIDEO_NAME}.torrent"
+          
+          # Rename it locally so aria2c recognizes it as a torrent file
+          mv "$TXT_FILE" "$TORRENT_FILE"
+          echo "Renamed locally to: $TORRENT_FILE"
+          
+          # Save variables for future steps
+          echo "TXT_FILE=$TXT_FILE" >> $GITHUB_ENV
+          echo "TORRENT_FILE=$TORRENT_FILE" >> $GITHUB_ENV
           echo "VIDEO_NAME=$VIDEO_NAME" >> $GITHUB_ENV
           echo "found=true" >> $GITHUB_ENV
 
@@ -133,10 +141,11 @@ jobs:
       - name: Commit Deletion of Processed Torrent
         if: env.found == 'true' && success()
         run: |
-          echo "Pipeline successful. Removing $TORRENT_FILE from the queue..."
+          echo "Pipeline successful. Removing original $TXT_FILE from the queue..."
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          git rm "$TORRENT_FILE"
-          git commit -m "Auto-Queue: Processed and removed $TORRENT_FILE"
+          # We must remove the tracked .txt file, not the renamed .torrent file
+          git rm "$TXT_FILE"
+          git commit -m "Auto-Queue: Processed and removed $TXT_FILE"
           git push

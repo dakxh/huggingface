@@ -1,4 +1,4 @@
-name: checkpoint - no cleanup
+name: checkpoint - with cleanup
 
 on:
   workflow_dispatch:
@@ -15,6 +15,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          
       - name: Free Up Disk Space
         uses: jlumbroso/free-disk-space@main
         with:

@@ -1,4 +1,4 @@
-name: Torrent Queue Processor
+name: exp
 
 on:
   workflow_dispatch:
@@ -15,7 +15,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
       - name: Find and Rename Text File
         id: queue_manager
         run: |
@@ -59,7 +58,6 @@ jobs:
         run: |
           mkdir -p hls_output
           
-          # Sorts by size (descending) and targets the largest file, avoiding sample.mkv traps
           VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec stat -c "%s %n" {} + | sort -nr | head -n 1 | cut -d' ' -f2-)
           echo "Processing $VIDEO_FILE..."
 
@@ -67,6 +65,7 @@ jobs:
 
           AUDIO_MAPS="-map 0:V:0"
           VAR_STREAM_MAP="v:0,agroup:audio "
+          AUDIO_ENCODING=""
           A_IDX=0
           LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
 
@@ -76,6 +75,19 @@ jobs:
                 echo "Mapping Audio $index: lang='${lang}', title='${title}'"
                 AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
+                
+                # --- SELECTIVE AUDIO TRANSCODING LOGIC ---
+                CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                
+                if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
+                  echo "  -> Unplayable codec detected ($CODEC). Transcoding to Opus 512k VBR."
+                  # libopus natively uses VBR. We explicitly set 512k for maximum audiophile quality.
+                  AUDIO_ENCODING+=" -c:a:$A_IDX libopus -b:a:$A_IDX 512k "
+                else
+                  echo "  -> Web-safe codec detected ($CODEC). Retaining 100% original quality (copy)."
+                  AUDIO_ENCODING+=" -c:a:$A_IDX copy "
+                fi
+                
                 A_IDX=$((A_IDX + 1))
               fi
             fi
@@ -85,6 +97,15 @@ jobs:
             echo "Fallback: No matching languages found. Using default audio."
             AUDIO_MAPS="$AUDIO_MAPS -map 0:a:0"
             VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
+            
+            CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+            if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
+              echo "  -> Fallback codec is $CODEC. Transcoding to Opus 512k VBR."
+              AUDIO_ENCODING=" -c:a:0 libopus -b:a:0 512k "
+            else
+              echo "  -> Fallback codec is $CODEC. Copying natively."
+              AUDIO_ENCODING=" -c:a:0 copy "
+            fi
           fi
 
           VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
@@ -94,7 +115,7 @@ jobs:
           
           if ! ffmpeg -fflags +genpts -i "$VIDEO_FILE" \
             $AUDIO_MAPS \
-            -c:v copy -c:a copy \
+            -c:v copy $AUDIO_ENCODING \
             -tag:v hvc1 \
             -max_muxing_queue_size 9999 \
             -f hls \
@@ -113,11 +134,10 @@ jobs:
           fi
           echo "✅ FFmpeg conversion successful."
 
-          # --- HEVC 10-BIT PLAYLIST BUG FIX (DYNAMIC ATTRIBUTES) ---
+          # HEVC 10-BIT BUG FIX (DYNAMIC)
           if ! grep -q "stream_0.m3u8" hls_output/master.m3u8; then
             echo "⚠️ HEVC Bug Detected: Injecting video stream manually with dynamic attributes..."
             
-            # 1. Calculate precise bandwidth (Bitrate + 10% network overhead buffer)
             BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
             if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
               SIZE=$(stat -c %s "$VIDEO_FILE")
@@ -126,13 +146,10 @@ jobs:
             fi
             BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
             
-            # 2. Extract precise resolution (e.g., 1920x800)
             RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
-            [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080" # Ultimate fallback
+            [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
             
-            # 3. Inject mathematically correct tags
             printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,CODECS="hvc1.2.4.L153.B0,mp4a.40.2",AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" >> hls_output/master.m3u8
-            echo "Injected dynamic stream data: Bandwidth=$BANDWIDTH, Resolution=$RESOLUTION"
           fi
             
           # SUBTITLE EXTRACTION & M3U8 INJECTION LOGIC
@@ -163,9 +180,10 @@ jobs:
             fi
           done <<< "$STREAMS"
 
+          # Bind subtitles specifically to the video streams
           if [[ "$HAS_SUBS" == "true" ]]; then
             echo "Binding subtitles to master video stream..."
-            sed -i 's/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/g' hls_output/master.m3u8
+            sed -i '/RESOLUTION=/ s/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/' hls_output/master.m3u8
           fi
 
           # THE HUGGING FACE REDIRECT FIX

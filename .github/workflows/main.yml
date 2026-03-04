@@ -74,7 +74,8 @@ jobs:
 
           STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
 
-          AUDIO_MAPS="-map 0:v:0"
+          # Use 0:V:0 (Capital V) to ignore MKV cover art and target the true movie stream
+          AUDIO_MAPS="-map 0:V:0"
           VAR_STREAM_MAP="v:0,agroup:audio "
           A_IDX=0
           LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
@@ -98,23 +99,31 @@ jobs:
 
           VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
 
-          echo "Running FFmpeg. Output is being logged to catch any crashes..."
-          if ! ffmpeg -i "$VIDEO_FILE" \
+          echo "Running FFmpeg with native C-level reporting..."
+          
+          # This forces FFmpeg to securely dump its own logs, completely bypassing bash buffer issues
+          export FFREPORT="file=ffmpeg_native_crash.log:level=32"
+          
+          if ! ffmpeg -fflags +genpts -i "$VIDEO_FILE" \
             $AUDIO_MAPS \
             -c:v copy -c:a copy \
+            -tag:v hvc1 \
+            -max_muxing_queue_size 9999 \
             -f hls \
+            -hls_segment_type fmp4 \
             -var_stream_map "$VAR_STREAM_MAP" \
             -master_pl_name master.m3u8 \
             -hls_time 10 \
             -hls_list_size 0 \
-            hls_output/stream_%v.m3u8 > ffmpeg_crash.log 2>&1; then
+            hls_output/stream_%v.m3u8; then
             
-            echo "❌ FFMPEG CRASHED! Dumping the exact error log below:"
+            echo "❌ FFMPEG CRASHED! Dumping the native C-level error log below:"
             echo "---------------------------------------------------"
-            cat ffmpeg_crash.log
+            cat ffmpeg_native_crash.log
             echo "---------------------------------------------------"
             exit 1
           fi
+          
           echo "✅ FFmpeg conversion successful."
             
           while IFS=',' read -r index ctype lang title; do

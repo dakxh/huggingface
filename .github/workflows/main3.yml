@@ -124,11 +124,15 @@ jobs:
             fi
           done <<< "$STREAMS"
 
-          # --- THE HUGGING FACE REDIRECT FIX ---
+          # --- THE HUGGING FACE REDIRECT FIX (UPDATED) ---
           echo "Fixing Hugging Face URL redirect bug..."
           HF_BASE="https://huggingface.co/datasets/${{ secrets.HF_REPO }}/resolve/main/${VIDEO_NAME}/"
-          find hls_output -name "*.m3u8" -exec sed -i "s|^[^#]|${HF_BASE}&|g" {} +
-          echo "✅ All relative paths converted to absolute URLs."
+          
+          # 1. Prepend to standalone lines (chunks & main streams)
+          # 2. Inject directly into URI="..." attributes (audio, subs, init files)
+          find hls_output -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
+          
+          echo "✅ All relative paths and embedded URIs converted to absolute URLs."
 
       - name: Upload Output to Hugging Face
         if: env.found == 'true'

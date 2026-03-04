@@ -1,9 +1,6 @@
 name: Torrent Queue Processor
 
 on:
-  push:
-    paths:
-      - '*.txt'
   workflow_dispatch:
 
 permissions:

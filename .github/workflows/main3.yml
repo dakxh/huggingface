@@ -1,4 +1,4 @@
-name: exp
+name: experimental
 
 on:
   push:

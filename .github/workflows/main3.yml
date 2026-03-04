@@ -1,9 +1,6 @@
-name: Torrent Queue Processor
+name: exp
 
 on:
-  push:
-    paths:
-      - '*.txt'
   workflow_dispatch:
 
 permissions:
@@ -66,7 +63,6 @@ jobs:
 
           STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
 
-          # Use 0:V:0 (Capital V) to ignore MKV cover art
           AUDIO_MAPS="-map 0:V:0"
           VAR_STREAM_MAP="v:0,agroup:audio "
           A_IDX=0
@@ -78,7 +74,6 @@ jobs:
                 echo "Mapping Audio $index: lang='${lang}', title='${title}'"
                 AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
-                # THE FIX: Safe arithmetic that prevents bash from throwing exit code 1
                 A_IDX=$((A_IDX + 1))
               fi
             fi
@@ -124,6 +119,14 @@ jobs:
               fi
             fi
           done <<< "$STREAMS"
+
+          # --- HEVC 10-BIT PLAYLIST BUG FIX ---
+          echo "Checking master playlist integrity..."
+          if ! grep -q "stream_0.m3u8" hls_output/master.m3u8; then
+            echo "⚠️ HEVC Bug Detected: FFmpeg silently dropped the video from the master playlist. Injecting manually..."
+            # Print a generic HEVC Main 10 codec string and link it to the audio group
+            printf '\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,CODECS="hvc1.2.4.L153.B0,mp4a.40.2",AUDIO="group_audio"\nstream_0.m3u8\n' >> hls_output/master.m3u8
+          fi
 
           # --- THE HUGGING FACE REDIRECT FIX ---
           echo "Fixing Hugging Face URL redirect bug..."

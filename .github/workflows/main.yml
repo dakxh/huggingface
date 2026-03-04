@@ -1,6 +1,9 @@
 name: Torrent Queue Processor
 
 on:
+  push:
+    paths:
+      - '*.txt'
   workflow_dispatch:
 
 permissions:
@@ -30,7 +33,6 @@ jobs:
       - name: Find and Rename Text File
         id: queue_manager
         run: |
-          # Find the first .txt file
           TXT_FILE=$(ls -1 *.txt 2>/dev/null | head -n 1)
           
           if [ -z "$TXT_FILE" ]; then
@@ -41,16 +43,13 @@ jobs:
           
           echo "Target acquired: $TXT_FILE"
           
-          # Extract base name (handles both 'movie.torrent.txt' and 'movie.txt')
           BASE_NAME=$(basename "$TXT_FILE" .txt)
-          VIDEO_NAME=${BASE_NAME%.torrent} # Strips .torrent if it was included in the name
+          VIDEO_NAME=${BASE_NAME%.torrent}
           TORRENT_FILE="${VIDEO_NAME}.torrent"
           
-          # Rename it locally so aria2c recognizes it as a torrent file
           mv "$TXT_FILE" "$TORRENT_FILE"
           echo "Renamed locally to: $TORRENT_FILE"
           
-          # Save variables for future steps
           echo "TXT_FILE=$TXT_FILE" >> $GITHUB_ENV
           echo "TORRENT_FILE=$TORRENT_FILE" >> $GITHUB_ENV
           echo "VIDEO_NAME=$VIDEO_NAME" >> $GITHUB_ENV
@@ -69,7 +68,6 @@ jobs:
           echo "Downloading $TORRENT_FILE..."
           aria2c --seed-time=0 "$TORRENT_FILE" -d workspace/
 
-      # 6. Process into HLS format (Fixed for HEVC/Atmos & MKV Cover Art)
       - name: Process Video, Audio, and Subs into HLS
         if: env.found == 'true'
         run: |
@@ -79,8 +77,7 @@ jobs:
 
           STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
 
-          # Use 0:V:0 (Capital V) to ignore MKV cover art/thumbnails and grab the actual movie
-          AUDIO_MAPS="-map 0:V:0"
+          AUDIO_MAPS="-map 0:v:0"
           VAR_STREAM_MAP="v:0,agroup:audio "
           A_IDX=0
           LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
@@ -102,26 +99,31 @@ jobs:
             VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
           fi
 
-          # Trim trailing space from map to prevent ffmpeg syntax errors
           VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
 
-          # Added fmp4 segment type to natively handle HEVC (H.265) and Atmos
-          ffmpeg -i "$VIDEO_FILE" \
+          echo "Running FFmpeg. Output is being logged to catch any crashes..."
+          if ! ffmpeg -i "$VIDEO_FILE" \
             $AUDIO_MAPS \
             -c:v copy -c:a copy \
             -f hls \
-            -hls_segment_type fmp4 \
             -var_stream_map "$VAR_STREAM_MAP" \
             -master_pl_name master.m3u8 \
             -hls_time 10 \
             -hls_list_size 0 \
-            hls_output/stream_%v.m3u8
+            hls_output/stream_%v.m3u8 > ffmpeg_crash.log 2>&1; then
+            
+            echo "❌ FFMPEG CRASHED! Dumping the exact error log below:"
+            echo "---------------------------------------------------"
+            cat ffmpeg_crash.log
+            echo "---------------------------------------------------"
+            exit 1
+          fi
+          echo "✅ FFmpeg conversion successful."
             
           while IFS=',' read -r index ctype lang title; do
             if [[ "$ctype" == "subtitle" ]]; then
               if [[ "$lang $title" =~ $LANG_REGEX ]]; then
                 echo "Extracting Subtitle $index: lang='${lang}'"
-                # The || true prevents the whole workflow from crashing if a subtitle track is an incompatible image format
                 ffmpeg -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/subs_${index}_${lang:-und}.vtt" || true
               fi
             fi
@@ -153,7 +155,6 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # We must remove the tracked .txt file, not the renamed .torrent file
           git rm "$TXT_FILE"
           git commit -m "Auto-Queue: Processed and removed $TXT_FILE"
           git push

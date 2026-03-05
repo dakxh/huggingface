@@ -52,7 +52,21 @@ jobs:
         run: |
           mkdir -p workspace
           echo "Downloading payload..."
-          aria2c --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
+          
+          if [[ "$TARGET_LINK" == http* ]]; then
+            echo "Detected HTTP Link (Discord Attachment). Fetching explicitly..."
+            curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
+            aria2c --seed-time=0 "workspace/payload.torrent" -d workspace/
+          else
+            echo "Detected Magnet Link. Fetching metadata natively..."
+            aria2c --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
+          fi
+          
+          VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec stat -c "%s %n" {} + | sort -nr | head -n 1 | cut -d' ' -f2-)
+          if [ -z "$VIDEO_FILE" ]; then
+             echo "❌ CRITICAL ERROR: aria2c failed to download the video payload. Exiting."
+             exit 1
+          fi
 
       - name: Process Video, Audio, and Subs into HLS
         if: env.found == 'true'

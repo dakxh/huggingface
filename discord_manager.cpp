@@ -24,6 +24,8 @@ string discordRequest(const string& method, const string& url, const string& tok
         string authHeader = "Authorization: Bot " + token;
         headers = curl_slist_append(headers, authHeader.c_str());
         headers = curl_slist_append(headers, "Content-Type: application/json");
+        headers = curl_slist_append(headers, "User-Agent: DiscordBot (https://github.com, 1.0)");
+        
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
         if (!payload.empty()) {
@@ -33,6 +35,8 @@ string discordRequest(const string& method, const string& url, const string& tok
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
         res = curl_easy_perform(curl);
+        
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
     }
     return readBuffer;
@@ -52,14 +56,27 @@ int main(int argc, char** argv) {
     if (mode == "fetch") {
         string url = base_url + "?limit=1";
         string response = discordRequest("GET", url, token);
-        
+
+        if (response == "[]" || response.empty()) {
+            cout << "empty|" << endl;
+            return 0;
+        }
+
         size_t id_pos = response.find("\"id\": \"");
         if (id_pos != string::npos) {
             id_pos += 7;
             string msg_id = response.substr(id_pos, response.find("\"", id_pos) - id_pos);
-            
+
             string target_link = "";
-            size_t url_pos = response.find("\"url\": \"");
+            size_t attach_pos = response.find("\"attachments\": [");
+            size_t url_pos = string::npos;
+            
+            if (attach_pos != string::npos) {
+                size_t end_attach = response.find("]", attach_pos);
+                url_pos = response.find("\"url\": \"", attach_pos);
+                if (url_pos > end_attach) url_pos = string::npos;
+            }
+
             if (url_pos != string::npos) {
                 url_pos += 8;
                 target_link = response.substr(url_pos, response.find("\"", url_pos) - url_pos);
@@ -74,7 +91,7 @@ int main(int argc, char** argv) {
             }
             cout << msg_id << "|" << target_link << endl;
         } else {
-            cout << "empty|" << endl;
+            cout << "error|" << response << endl;
         }
     } 
     else if (mode == "delete" && argc >= 5) {

@@ -1,4 +1,4 @@
-name: Discord Torrent to HLS Pipeline
+name: exp
 
 on:
   workflow_dispatch:
@@ -41,6 +41,7 @@ jobs:
           fi
           
           echo "Target acquired: $TARGET_LINK"
+          # Temporary fallback name for the queue
           VIDEO_NAME="Queue_$(date +%s)"
           
           echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
@@ -68,6 +69,42 @@ jobs:
              echo "❌ CRITICAL ERROR: aria2c failed to download the video payload. Exiting."
              exit 1
           fi
+
+      - name: Parse Clean Video Name
+        if: env.found == 'true'
+        run: |
+          echo "Running Python GuessIt to extract clean scene metadata..."
+          python -c "
+          import os, glob, re
+          from guessit import guessit
+
+          video_files = glob.glob('workspace/**/*.mkv', recursive=True) + glob.glob('workspace/**/*.mp4', recursive=True)
+          if not video_files:
+              print('❌ No video file found.')
+              exit(1)
+
+          file_path = max(video_files, key=os.path.getsize)
+          filename = os.path.basename(file_path)
+
+          g = guessit(filename)
+          title = g.get('title', 'Unknown')
+          year = g.get('year', '')
+          quality = g.get('screen_size', '')
+
+          clean_name = str(title).replace(' ', '.')
+          if year:
+              clean_name += f'.{year}'
+          if quality:
+              clean_name += f'.{quality}'
+
+          clean_name = re.sub(r'[^a-zA-Z0-9.\-]', '', clean_name)
+          
+          print(f'Original filename: {filename}')
+          print(f'Parsed clean name: {clean_name}')
+          
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write(f'VIDEO_NAME={clean_name}\n')
+          "
 
       - name: Process Video, Audio, and Subs into HLS
         if: env.found == 'true'
@@ -306,7 +343,6 @@ jobs:
           QUEUE_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          # Fetch the human-readable title from the generated metadata file
           CLEAN_TITLE=$(python -c "import json; print(json.load(open('hls_output/metadata.json')).get('title', 'Unknown'))" 2>/dev/null || echo "Unknown")
           TOTAL_SIZE=$(du -sh hls_output | cut -f1)
           

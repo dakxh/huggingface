@@ -165,8 +165,8 @@ jobs:
             fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             
-            # Explicitly setting segment filename to prevent crash on folder spaces
-            if ! ffmpeg -fflags +genpts -i "$VIDEO_FILE" \
+            # --- FFMPEG FIX: -nostdin added here ---
+            if ! ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -max_muxing_queue_size 9999 -f hls -hls_segment_type fmp4 -hls_flags single_file \
               -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v.m4s" \
@@ -192,13 +192,15 @@ jobs:
             HAS_SUBS="false"
             echo "" >> "hls_output/$TARGET_DIR/master.m3u8"
             
+            # --- PASS 1: STANDARD SUBTITLE MAPPING ---
             while IFS=',' read -r index ctype lang title; do
               if [[ "$ctype" == "subtitle" ]]; then
                 if [[ "$lang $title" =~ $LANG_REGEX ]]; then
                   SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt)$ ]]; then
                     VTT_FILE="hls_output/$TARGET_DIR/subs_${index}_${lang:-und}.vtt"
-                    if ffmpeg -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
+                    # --- FFMPEG FIX: -nostdin added here ---
+                    if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
                       if [ -s "$VTT_FILE" ]; then
                         HAS_SUBS="true"
                         CLEAN_NAME=$(echo "${title:-$lang}" | tr -cd 'a-zA-Z0-9 ()[]_-' | sed 's/^ *//;s/ *$//')
@@ -212,6 +214,52 @@ jobs:
                 fi
               fi
             done <<< "$STREAMS"
+            
+            # --- PASS 2: ENGLISH CONTENT AUTO-DETECTION FALLBACK ---
+            if [[ "$HAS_SUBS" == "false" ]]; then
+              echo "⚠️ No matching subtitles found. Scanning unidentified tracks for English..."
+              
+              cat << 'EOF' > detect_eng.py
+          import sys, re
+          try:
+              with open(sys.argv[1], 'r', encoding='utf-8', errors='ignore') as f:
+                  text = f.read().lower()
+              words = re.findall(r'\b[a-z]{2,5}\b', text)
+              eng = {'the','and','that','have','for','not','with','you','this','but','his','from','they','say','she','will','what','who','get','when','make','can','like','time','just','know','take','your','good','some','could','them','other','than','then','now','look','only','come','over','think','also','back','after','how','our','first','well','way','even','want','because','any','these','give','most','are','was','were'}
+              print('true' if sum(1 for w in words if w in eng) > 15 else 'false')
+          except:
+              print('false')
+          EOF
+
+              while IFS=',' read -r index ctype lang title; do
+                if [[ "$ctype" == "subtitle" ]]; then
+                  SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                  if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt)$ ]]; then
+                    TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
+                    
+                    # --- FFMPEG FIX: -nostdin added here ---
+                    if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1; then
+                      if [ -s "$TEMP_VTT" ]; then
+                        IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")
+                        
+                        if [[ "$IS_ENGLISH" == "true" ]]; then
+                          echo "✅ English auto-detected in track index $index!"
+                          mv "$TEMP_VTT" "hls_output/$TARGET_DIR/subs_${index}_eng.vtt"
+                          HAS_SUBS="true"
+                          printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="English (Auto)",LANGUAGE="eng",URI="%s"\n' "subs_${index}_eng.vtt" >> "hls_output/$TARGET_DIR/master.m3u8"
+                          break
+                        else
+                          rm -f "$TEMP_VTT"
+                        fi
+                      else
+                        rm -f "$TEMP_VTT"
+                      fi
+                    fi
+                  fi
+                fi
+              done <<< "$STREAMS"
+              rm -f detect_eng.py
+            fi
             
             if [[ "$HAS_SUBS" == "true" ]]; then
               sed -i '/RESOLUTION=/ s/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/' "hls_output/$TARGET_DIR/master.m3u8"

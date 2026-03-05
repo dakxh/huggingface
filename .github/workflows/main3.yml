@@ -61,15 +61,31 @@ jobs:
           
           VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec stat -c "%s %n" {} + | sort -nr | head -n 1 | cut -d' ' -f2-)
           echo "Processing $VIDEO_FILE..."
+          
+          # --- DYNAMIC VIDEO CODEC DETECTION ---
+          VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          
+          if [[ "$VIDEO_CODEC" == "hevc" ]]; then
+            echo "-> Detected HEVC (H.265) video."
+            V_TAG="-tag:v hvc1"
+            M3U8_V_CODEC="hvc1.2.4.L153.B0"
+          elif [[ "$VIDEO_CODEC" == "h264" ]]; then
+            echo "-> Detected AVC (H.264) video."
+            V_TAG="-tag:v avc1"
+            M3U8_V_CODEC="avc1.640028"
+          else
+            echo "-> Unknown/Unsupported video codec ($VIDEO_CODEC). Defaulting to standard AVC signaling."
+            V_TAG="-tag:v avc1"
+            M3U8_V_CODEC="avc1.640028"
+          fi
 
           STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
-
           AUDIO_MAPS="-map 0:V:0"
           VAR_STREAM_MAP="v:0,agroup:audio "
           AUDIO_ENCODING=""
           A_IDX=0
           LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
-
+          
           while IFS=',' read -r index ctype lang title; do
             if [[ "$ctype" == "audio" ]]; then
               if [[ "$lang $title" =~ $LANG_REGEX ]]; then
@@ -77,12 +93,10 @@ jobs:
                 AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
                 
-                # --- SELECTIVE AUDIO TRANSCODING WITH CHANNEL MAPPING FIX ---
                 CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
                 
                 if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
                   echo "  -> Unplayable codec detected ($CODEC). Transcoding to Opus 512k VBR with safe channel mapping."
-                  # Added an audio format filter to force bizarre layouts into Opus-compliant standards
                   AUDIO_ENCODING+=" -c:a:$A_IDX libopus -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=7.1|5.1|stereo "
                 else
                   echo "  -> Web-safe codec detected ($CODEC). Retaining 100% original quality (copy)."
@@ -93,7 +107,7 @@ jobs:
               fi
             fi
           done <<< "$STREAMS"
-
+          
           if [[ "$A_IDX" -eq 0 ]]; then
             echo "Fallback: No matching languages found. Using default audio."
             AUDIO_MAPS="$AUDIO_MAPS -map 0:a:0"
@@ -108,16 +122,15 @@ jobs:
               AUDIO_ENCODING=" -c:a:0 copy "
             fi
           fi
-
+          
           VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
-
           echo "Running FFmpeg with native C-level reporting..."
           export FFREPORT="file=ffmpeg_native_crash.log:level=32"
           
           if ! ffmpeg -fflags +genpts -i "$VIDEO_FILE" \
             $AUDIO_MAPS \
             -c:v copy $AUDIO_ENCODING \
-            -tag:v hvc1 \
+            $V_TAG \
             -max_muxing_queue_size 9999 \
             -f hls \
             -hls_segment_type fmp4 \
@@ -134,10 +147,10 @@ jobs:
             exit 1
           fi
           echo "✅ FFmpeg conversion successful."
-
-          # HEVC 10-BIT BUG FIX (DYNAMIC)
+          
+          # DYNAMIC M3U8 STREAM INJECTION
           if ! grep -q "stream_0.m3u8" hls_output/master.m3u8; then
-            echo "⚠️ HEVC Bug Detected: Injecting video stream manually with dynamic attributes..."
+            echo "⚠️ Bug Detected: Injecting video stream manually with dynamic attributes..."
             
             BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
             if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
@@ -150,7 +163,7 @@ jobs:
             RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
             [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
             
-            printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,CODECS="hvc1.2.4.L153.B0,mp4a.40.2",AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" >> hls_output/master.m3u8
+            printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,CODECS="%s,mp4a.40.2",AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" "$M3U8_V_CODEC" >> hls_output/master.m3u8
           fi
             
           # SUBTITLE EXTRACTION & M3U8 INJECTION LOGIC
@@ -180,14 +193,12 @@ jobs:
               fi
             fi
           done <<< "$STREAMS"
-
-          # Bind subtitles specifically to the video streams
+          
           if [[ "$HAS_SUBS" == "true" ]]; then
             echo "Binding subtitles to master video stream..."
             sed -i '/RESOLUTION=/ s/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/' hls_output/master.m3u8
           fi
-
-          # THE HUGGING FACE REDIRECT FIX
+          
           echo "Fixing Hugging Face URL redirect bug..."
           HF_BASE="https://huggingface.co/datasets/${{ secrets.HF_REPO }}/resolve/main/${VIDEO_NAME}/"
           find hls_output -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +

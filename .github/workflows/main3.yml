@@ -64,11 +64,21 @@ jobs:
             aria2c --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
           fi
           
-          VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec stat -c "%s %n" {} + | sort -nr | head -n 1 | cut -d' ' -f2-)
-          if [ -z "$VIDEO_FILE" ]; then
+          # Find the actual downloaded video file
+          ACTUAL_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec basename {} \; | sort -nr | head -n 1)
+          if [ -z "$ACTUAL_FILE" ]; then
              echo "❌ CRITICAL ERROR: aria2c failed to download the video payload. Exiting."
              exit 1
           fi
+          
+          echo "Compiling and running the C++ Scene Parser..."
+          g++ name_parser.cpp -o name_parser
+          
+          CLEAN_NAME=$(./name_parser "$ACTUAL_FILE")
+          echo "Parsed clean name: $CLEAN_NAME"
+          
+          # Overwrite the temporary timestamp queue name with the perfectly formatted movie name
+          echo "VIDEO_NAME=$CLEAN_NAME" >> $GITHUB_ENV
 
       - name: Process Video, Audio, and Subs into HLS
         if: env.found == 'true'

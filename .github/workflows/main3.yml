@@ -18,7 +18,6 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Added unzip to handle archived payloads
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
           pip install huggingface_hub guessit requests gdown
 
@@ -41,7 +40,6 @@ jobs:
           fi
           
           echo "Target acquired: $TARGET_LINK"
-          
           echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
           echo "TARGET_LINK=$TARGET_LINK" >> $GITHUB_ENV
           echo "found=true" >> $GITHUB_ENV
@@ -55,15 +53,13 @@ jobs:
           if [[ "$TARGET_LINK" == *drive.google.com* ]]; then
             echo "🌐 Detected Google Drive Link. Fetching via gdown..."
             if [[ "$TARGET_LINK" == */folders/* ]]; then
-              echo "📂 Drive Folder detected."
               gdown --folder "$TARGET_LINK" -O workspace/
             else
-              echo "📄 Drive Single File detected."
               gdown --fuzzy "$TARGET_LINK" -O workspace/
             fi
             
           elif [[ "$TARGET_LINK" == http* ]]; then
-            echo "📎 Detected HTTP Link (Discord Attachment). Fetching torrent file explicitly..."
+            echo "📎 Detected HTTP Link. Fetching torrent file explicitly..."
             curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
             aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
             
@@ -72,16 +68,13 @@ jobs:
             aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
           fi
           
-          # --- ZIP EXTRACTION LOGIC ---
           echo "📦 Scanning for ZIP archives..."
           find workspace -type f -name "*.zip" | while read ZIP_FILE; do
             echo "Extracting archive: $ZIP_FILE"
             unzip -q "$ZIP_FILE" -d workspace/
-            # Delete the original zip to keep the workspace clean and free up disk space
             rm "$ZIP_FILE"
           done
           
-          # Check if ANY video file was downloaded or extracted
           VIDEO_COUNT=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l)
           if [ "$VIDEO_COUNT" -eq 0 ]; then
              echo "❌ CRITICAL ERROR: Failed to locate any video files after download and extraction. Exiting."
@@ -172,9 +165,11 @@ jobs:
             fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             
+            # Explicitly setting segment filename to prevent crash on folder spaces
             if ! ffmpeg -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -max_muxing_queue_size 9999 -f hls -hls_segment_type fmp4 -hls_flags single_file \
+              -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v.m4s" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
               "hls_output/$TARGET_DIR/stream_%v.m3u8"; then
               echo "❌ FFMPEG CRASHED ON $BASENAME! Skipping to next file..."

@@ -18,8 +18,9 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq
-          pip install huggingface_hub guessit requests
+          # Added unzip to handle archived payloads
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
+          pip install huggingface_hub guessit requests gdown
 
       - name: Compile and Fetch from Discord
         id: discord_fetch
@@ -34,215 +35,204 @@ jobs:
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
           
           if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
-            echo "❌ API Error or No valid magnet/torrent found."
-            echo "API Trace: $TARGET_LINK"
+            echo "❌ API Error or No valid link found."
             echo "found=false" >> $GITHUB_ENV
             exit 0
           fi
           
           echo "Target acquired: $TARGET_LINK"
-          VIDEO_NAME="Queue_$(date +%s)"
           
           echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
           echo "TARGET_LINK=$TARGET_LINK" >> $GITHUB_ENV
-          echo "VIDEO_NAME=$VIDEO_NAME" >> $GITHUB_ENV
           echo "found=true" >> $GITHUB_ENV
 
-      - name: Download Torrent or Magnet
+      - name: Download and Extract Payload
         if: env.found == 'true'
         run: |
           mkdir -p workspace
-          echo "Downloading payload..."
+          echo "Evaluating Payload Type..."
           
-          if [[ "$TARGET_LINK" == http* ]]; then
-            echo "Detected HTTP Link (Discord Attachment). Fetching explicitly..."
+          if [[ "$TARGET_LINK" == *drive.google.com* ]]; then
+            echo "🌐 Detected Google Drive Link. Fetching via gdown..."
+            if [[ "$TARGET_LINK" == */folders/* ]]; then
+              echo "📂 Drive Folder detected."
+              gdown --folder "$TARGET_LINK" -O workspace/
+            else
+              echo "📄 Drive Single File detected."
+              gdown --fuzzy "$TARGET_LINK" -O workspace/
+            fi
+            
+          elif [[ "$TARGET_LINK" == http* ]]; then
+            echo "📎 Detected HTTP Link (Discord Attachment). Fetching torrent file explicitly..."
             curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
-            aria2c --seed-time=0 "workspace/payload.torrent" -d workspace/
+            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
+            
           else
-            echo "Detected Magnet Link. Fetching metadata natively..."
-            aria2c --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
+            echo "🧲 Detected Magnet Link. Fetching metadata natively..."
+            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
           fi
           
-          VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec basename {} \; | sort -nr | head -n 1)
-          if [ -z "$VIDEO_FILE" ]; then
-             echo "❌ CRITICAL ERROR: aria2c failed to download the video payload. Exiting."
+          # --- ZIP EXTRACTION LOGIC ---
+          echo "📦 Scanning for ZIP archives..."
+          find workspace -type f -name "*.zip" | while read ZIP_FILE; do
+            echo "Extracting archive: $ZIP_FILE"
+            unzip -q "$ZIP_FILE" -d workspace/
+            # Delete the original zip to keep the workspace clean and free up disk space
+            rm "$ZIP_FILE"
+          done
+          
+          # Check if ANY video file was downloaded or extracted
+          VIDEO_COUNT=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l)
+          if [ "$VIDEO_COUNT" -eq 0 ]; then
+             echo "❌ CRITICAL ERROR: Failed to locate any video files after download and extraction. Exiting."
              exit 1
           fi
 
-      - name: Parse Clean Video Name
-        if: env.found == 'true'
-        run: |
-          echo "Running Python GuessIt to extract clean scene metadata..."
-          python -c "
-          import os, glob, re
-          from guessit import guessit
-
-          video_files = glob.glob('workspace/**/*.mkv', recursive=True) + glob.glob('workspace/**/*.mp4', recursive=True)
-          if not video_files:
-              print('❌ No video file found.')
-              exit(1)
-
-          file_path = max(video_files, key=os.path.getsize)
-          filename = os.path.basename(file_path)
-
-          g = guessit(filename)
-          title = g.get('title', 'Unknown')
-          year = g.get('year', '')
-          quality = g.get('screen_size', '')
-
-          clean_name = str(title).replace(' ', '.')
-          if year:
-              clean_name += f'.{year}'
-          if quality:
-              clean_name += f'.{quality}'
-
-          clean_name = re.sub(r'[^a-zA-Z0-9.\-]', '', clean_name)
-          
-          print(f'Original filename: {filename}')
-          print(f'Parsed clean name: {clean_name}')
-          
-          with open(os.environ['GITHUB_ENV'], 'a') as f:
-              f.write(f'VIDEO_NAME={clean_name}\n')
-          "
-
-      - name: Process Video, Audio, and Subs into HLS
-        if: env.found == 'true'
-        run: |
-          mkdir -p hls_output
-          
-          VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec stat -c "%s %n" {} + | sort -nr | head -n 1 | cut -d' ' -f2-)
-          echo "Processing $VIDEO_FILE..."
-          
-          VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-          
-          if [[ "$VIDEO_CODEC" == "hevc" ]]; then
-            V_TAG="-tag:v hvc1"
-            M3U8_V_CODEC="hvc1.2.4.L153.B0"
-          else
-            V_TAG="-tag:v avc1"
-            M3U8_V_CODEC="avc1.640028"
-          fi
-
-          STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
-          AUDIO_MAPS="-map 0:V:0"
-          VAR_STREAM_MAP="v:0,agroup:audio "
-          AUDIO_ENCODING=""
-          A_IDX=0
-          LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
-          
-          while IFS=',' read -r index ctype lang title; do
-            if [[ "$ctype" == "audio" ]]; then
-              if [[ "$lang $title" =~ $LANG_REGEX ]]; then
-                AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
-                VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
-                
-                CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-                
-                if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
-                  AUDIO_ENCODING+=" -c:a:$A_IDX libopus -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=7.1|5.1|stereo "
-                else
-                  AUDIO_ENCODING+=" -c:a:$A_IDX copy "
-                fi
-                A_IDX=$((A_IDX + 1))
-              fi
-            fi
-          done <<< "$STREAMS"
-          
-          if [[ "$A_IDX" -eq 0 ]]; then
-            AUDIO_MAPS="$AUDIO_MAPS -map 0:a:0"
-            VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
-            CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-            if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
-              AUDIO_ENCODING=" -c:a:0 libopus -b:a:0 512k -filter:a:0 aformat=channel_layouts=7.1|5.1|stereo "
-            else
-              AUDIO_ENCODING=" -c:a:0 copy "
-            fi
-          fi
-          
-          VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
-          export FFREPORT="file=ffmpeg_native_crash.log:level=32"
-          
-          if ! ffmpeg -fflags +genpts -i "$VIDEO_FILE" \
-            $AUDIO_MAPS \
-            -c:v copy $AUDIO_ENCODING \
-            $V_TAG \
-            -max_muxing_queue_size 9999 \
-            -f hls \
-            -hls_segment_type fmp4 \
-            -hls_flags single_file \
-            -var_stream_map "$VAR_STREAM_MAP" \
-            -master_pl_name master.m3u8 \
-            -hls_time 10 \
-            -hls_list_size 0 \
-            hls_output/stream_%v.m3u8; then
-            cat ffmpeg_native_crash.log
-            exit 1
-          fi
-          
-          if ! grep -q "stream_0.m3u8" hls_output/master.m3u8; then
-            BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
-            if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
-              SIZE=$(stat -c %s "$VIDEO_FILE")
-              DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
-              BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
-            fi
-            BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
-            RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
-            [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
-            printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,CODECS="%s,mp4a.40.2",AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" "$M3U8_V_CODEC" >> hls_output/master.m3u8
-          fi
-            
-          HAS_SUBS="false"
-          echo "" >> hls_output/master.m3u8
-          
-          # --- STRICT TEXT-BASED SUBTITLE EXTRACTION ---
-          while IFS=',' read -r index ctype lang title; do
-            if [[ "$ctype" == "subtitle" ]]; then
-              if [[ "$lang $title" =~ $LANG_REGEX ]]; then
-                SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-                
-                if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt)$ ]]; then
-                  VTT_FILE="hls_output/subs_${index}_${lang:-und}.vtt"
-                  if ffmpeg -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
-                    if [ -s "$VTT_FILE" ]; then
-                      HAS_SUBS="true"
-                      CLEAN_NAME=$(echo "${title:-$lang}" | tr -cd 'a-zA-Z0-9 ()[]_-' | sed 's/^ *//;s/ *$//')
-                      [ -z "$CLEAN_NAME" ] && CLEAN_NAME="Sub_${index}"
-                      printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="%s",LANGUAGE="%s",URI="%s"\n' "$CLEAN_NAME" "${lang:-und}" "subs_${index}_${lang:-und}.vtt" >> hls_output/master.m3u8
-                    else
-                      rm -f "$VTT_FILE"
-                    fi
-                  fi
-                fi
-              fi
-            fi
-          done <<< "$STREAMS"
-          
-          if [[ "$HAS_SUBS" == "true" ]]; then
-            sed -i '/RESOLUTION=/ s/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/' hls_output/master.m3u8
-          fi
-          
-          HF_BASE="https://huggingface.co/datasets/${{ secrets.HF_REPO }}/resolve/main/${VIDEO_NAME}/"
-          find hls_output -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
-
-      - name: Generate Rich Metadata JSON
+      - name: Process Master Loop (Batch Parsing, FFmpeg, Metadata)
         if: env.found == 'true'
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           HF_REPO: ${{ secrets.HF_REPO }}
         run: |
-          python -c "
-          import os, json, requests, subprocess, glob
-          from guessit import guessit
-
-          print('Extracting actual video file stats...')
+          mkdir -p hls_output
           
-          video_files = glob.glob('workspace/**/*.mkv', recursive=True) + glob.glob('workspace/**/*.mp4', recursive=True)
-          if not video_files:
-              print('❌ No video file found for metadata extraction.')
-              exit(1)
+          find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | while read VIDEO_FILE; do
+            echo "================================================================"
+            echo "🎬 PROCESSING FILE: $VIDEO_FILE"
+            BASENAME=$(basename "$VIDEO_FILE")
+            
+            # 1. DYNAMIC ROUTING (GuessIt)
+            TARGET_DIR=$(python -c "
+          import sys, re
+          from guessit import guessit
+          g = guessit(sys.argv[1])
+          if g.get('type') == 'episode':
+              title = str(g.get('title', 'Unknown_Series')).title().replace(' ', '.')
+              title = re.sub(r'[^a-zA-Z0-9.\-]', '', title)
+              s = g.get('season', 1)
+              e = g.get('episode', 1)
+              s = s[0] if isinstance(s, list) else s
+              e = e[0] if isinstance(e, list) else e
+              print(f'{title}/Season {int(s):02d}/Episode {int(e):02d}')
+          else:
+              title = str(g.get('title', 'Unknown')).replace(' ', '.')
+              year = g.get('year', '')
+              quality = g.get('screen_size', '')
+              clean_name = title
+              if year: clean_name += f'.{year}'
+              if quality: clean_name += f'.{quality}'
+              print(re.sub(r'[^a-zA-Z0-9.\-]', '', clean_name))
+          " "$BASENAME")
+            
+            echo "📁 Target HF Directory: $TARGET_DIR"
+            mkdir -p "hls_output/$TARGET_DIR"
+            
+            # 2. FFMPEG TRANSCODING
+            VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+            if [[ "$VIDEO_CODEC" == "hevc" ]]; then
+              V_TAG="-tag:v hvc1"
+              M3U8_V_CODEC="hvc1.2.4.L153.B0"
+            else
+              V_TAG="-tag:v avc1"
+              M3U8_V_CODEC="avc1.640028"
+            fi
+
+            STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
+            AUDIO_MAPS="-map 0:V:0"
+            VAR_STREAM_MAP="v:0,agroup:audio "
+            AUDIO_ENCODING=""
+            A_IDX=0
+            LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
+            
+            while IFS=',' read -r index ctype lang title; do
+              if [[ "$ctype" == "audio" ]]; then
+                if [[ "$lang $title" =~ $LANG_REGEX ]]; then
+                  AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
+                  VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
+                  CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                  if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
+                    AUDIO_ENCODING+=" -c:a:$A_IDX libopus -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=7.1|5.1|stereo "
+                  else
+                    AUDIO_ENCODING+=" -c:a:$A_IDX copy "
+                  fi
+                  A_IDX=$((A_IDX + 1))
+                fi
+              fi
+            done <<< "$STREAMS"
+            
+            if [[ "$A_IDX" -eq 0 ]]; then
+              AUDIO_MAPS="$AUDIO_MAPS -map 0:a:0"
+              VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
+              CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+              if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
+                AUDIO_ENCODING=" -c:a:0 libopus -b:a:0 512k -filter:a:0 aformat=channel_layouts=7.1|5.1|stereo "
+              else
+                AUDIO_ENCODING=" -c:a:0 copy "
+              fi
+            fi
+            VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
+            
+            if ! ffmpeg -fflags +genpts -i "$VIDEO_FILE" \
+              $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
+              -max_muxing_queue_size 9999 -f hls -hls_segment_type fmp4 -hls_flags single_file \
+              -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
+              "hls_output/$TARGET_DIR/stream_%v.m3u8"; then
+              echo "❌ FFMPEG CRASHED ON $BASENAME! Skipping to next file..."
+              continue
+            fi
+            
+            if ! grep -q "stream_0.m3u8" "hls_output/$TARGET_DIR/master.m3u8"; then
+              BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+              if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
+                SIZE=$(stat -c %s "$VIDEO_FILE")
+                DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
+              fi
+              BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
+              RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
+              [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
+              printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,CODECS="%s,mp4a.40.2",AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" "$M3U8_V_CODEC" >> "hls_output/$TARGET_DIR/master.m3u8"
+            fi
               
-          file_path = max(video_files, key=os.path.getsize)
+            HAS_SUBS="false"
+            echo "" >> "hls_output/$TARGET_DIR/master.m3u8"
+            
+            while IFS=',' read -r index ctype lang title; do
+              if [[ "$ctype" == "subtitle" ]]; then
+                if [[ "$lang $title" =~ $LANG_REGEX ]]; then
+                  SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                  if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt)$ ]]; then
+                    VTT_FILE="hls_output/$TARGET_DIR/subs_${index}_${lang:-und}.vtt"
+                    if ffmpeg -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
+                      if [ -s "$VTT_FILE" ]; then
+                        HAS_SUBS="true"
+                        CLEAN_NAME=$(echo "${title:-$lang}" | tr -cd 'a-zA-Z0-9 ()[]_-' | sed 's/^ *//;s/ *$//')
+                        [ -z "$CLEAN_NAME" ] && CLEAN_NAME="Sub_${index}"
+                        printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="%s",LANGUAGE="%s",URI="%s"\n' "$CLEAN_NAME" "${lang:-und}" "subs_${index}_${lang:-und}.vtt" >> "hls_output/$TARGET_DIR/master.m3u8"
+                      else
+                        rm -f "$VTT_FILE"
+                      fi
+                    fi
+                  fi
+                fi
+              fi
+            done <<< "$STREAMS"
+            
+            if [[ "$HAS_SUBS" == "true" ]]; then
+              sed -i '/RESOLUTION=/ s/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/' "hls_output/$TARGET_DIR/master.m3u8"
+            fi
+            
+            HF_BASE="https://huggingface.co/datasets/${{ secrets.HF_REPO }}/resolve/main/${TARGET_DIR}/"
+            HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
+            find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
+
+            # 3. GENERATE RICH METADATA
+            python -c "
+          import os, json, requests, subprocess, sys
+          from guessit import guessit
+          
+          file_path = sys.argv[1]
+          target_dir = sys.argv[2]
           filename = os.path.basename(file_path)
 
           g = guessit(filename)
@@ -251,75 +241,56 @@ jobs:
           quality = g.get('screen_size', 'Unknown Quality')
 
           size_bytes = os.path.getsize(file_path)
-          size_gb = round(size_bytes / (1024**3), 2)
-          size_str = f'{size_gb} GB'
+          size_str = f'{round(size_bytes / (1024**3), 2)} GB'
 
           duration_formatted = '0m'
           try:
               cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
-              result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-              dur_seconds = float(result.stdout.strip())
-              
-              hours = int(dur_seconds // 3600)
-              minutes = int((dur_seconds % 3600) // 60)
-              
-              if hours > 0:
-                  duration_formatted = f'{hours}h{minutes}m'
-              else:
-                  duration_formatted = f'{minutes}m'
-          except Exception as e:
-              print('Failed to get duration:', e)
+              res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+              dur = float(res.stdout.strip())
+              h, m = int(dur // 3600), int((dur % 3600) // 60)
+              duration_formatted = f'{h}h{m}m' if h > 0 else f'{m}m'
+          except: pass
 
           hf_repo = os.environ.get('HF_REPO', '')
-          video_name = os.environ.get('VIDEO_NAME', '')
-          hf_base_url = f'https://huggingface.co/datasets/{hf_repo}/resolve/main/{video_name}/'
+          
+          import urllib.parse
+          safe_target_dir = urllib.parse.quote(target_dir)
+          hf_base_url = f'https://huggingface.co/datasets/{hf_repo}/resolve/main/{safe_target_dir}/'
 
           metadata = {
-              'id': 0,
-              'original_filename': filename,
-              'title': title,
-              'year': str(year) if year else '',
-              'quality': quality,
-              'duration': duration_formatted,
-              'size': size_str,
-              'rating': 0.0,
-              'poster_url': '',
-              'backdrop_url': '',
-              'hls_manifest_url': f'{hf_base_url}master.m3u8',
-              'overview': ''
+              'id': 0, 'original_filename': filename, 'title': title, 'year': str(year) if year else '',
+              'quality': quality, 'duration': duration_formatted, 'size': size_str, 'rating': 0.0,
+              'poster_url': '', 'backdrop_url': '', 'hls_manifest_url': f'{hf_base_url}master.m3u8', 'overview': ''
           }
 
           tmdb_key = os.environ.get('TMDB_API_KEY')
           if tmdb_key and title != 'Unknown Title':
-              m_type = 'tv' if 'season' in g or 'episode' in g else 'movie'
-              
+              m_type = 'tv' if g.get('type') == 'episode' else 'movie'
               search_url = f'https://api.themoviedb.org/3/search/{m_type}?api_key={tmdb_key}&query={title}'
-              if year:
-                  search_url += f'&year={year}' if m_type == 'movie' else f'&first_air_date_year={year}'
-              
+              if year: search_url += f'&year={year}' if m_type == 'movie' else f'&first_air_date_year={year}'
               try:
                   res = requests.get(search_url).json()
-                  if res.get('results') and len(res['results']) > 0:
-                      best_match = res['results'][0]
-                      
-                      metadata['id'] = best_match.get('id', 0)
-                      metadata['title'] = best_match.get('title') or best_match.get('name') or title
-                      metadata['overview'] = best_match.get('overview', '')
-                      metadata['rating'] = round(best_match.get('vote_average', 0.0), 1)
-                      
-                      if best_match.get('poster_path'):
-                          metadata['poster_url'] = f'https://image.tmdb.org/t/p/w600_and_h900_bestv2{best_match.get(\"poster_path\")}'
-                      if best_match.get('backdrop_path'):
-                          metadata['backdrop_url'] = f'https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{best_match.get(\"backdrop_path\")}'
-              except Exception as e:
-                  print('TMDB API fetch failed:', e)
+                  if res.get('results'):
+                      match = res['results'][0]
+                      metadata['id'] = match.get('id', 0)
+                      metadata['title'] = match.get('name') if m_type == 'tv' else match.get('title', title)
+                      metadata['overview'] = match.get('overview', '')
+                      metadata['rating'] = round(match.get('vote_average', 0.0), 1)
+                      if match.get('poster_path'): metadata['poster_url'] = f'https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get(\"poster_path\")}'
+                      if match.get('backdrop_path'): metadata['backdrop_url'] = f'https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get(\"backdrop_path\")}'
+              except: pass
 
-          os.makedirs('hls_output', exist_ok=True)
-          with open('hls_output/metadata.json', 'w') as f:
+          with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
               json.dump(metadata, f, indent=4)
+          " "$VIDEO_FILE" "$TARGET_DIR"
+
+          done
           
-          print('✅ Rich Metadata successfully generated and saved.')
-          "
+          if [ ! -d "hls_output" ] || [ -z "$(ls -A hls_output)" ]; then
+            echo "❌ CRITICAL ERROR: hls_output is empty. Processing failed."
+            exit 1
+          fi
 
       - name: Upload Output to Hugging Face
         if: env.found == 'true'
@@ -333,7 +304,7 @@ jobs:
           api = HfApi()
           api.upload_folder(
               folder_path='hls_output',
-              path_in_repo=os.environ.get('VIDEO_NAME'),
+              path_in_repo='',
               repo_id=os.environ.get('HF_REPO'),
               repo_type='dataset',
               token=os.environ.get('HF_TOKEN')
@@ -347,15 +318,12 @@ jobs:
           QUEUE_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          CLEAN_TITLE=$(python -c "import json; print(json.load(open('hls_output/metadata.json')).get('title', 'Unknown'))" 2>/dev/null || echo "Unknown")
+          TOTAL_FILES=$(find hls_output -name "metadata.json" | wc -l)
           TOTAL_SIZE=$(du -sh hls_output | cut -f1)
           
-          STATUS_MSG="✅ **Upload Complete!** \n🎬 Title: \`${CLEAN_TITLE}\`\n📦 Size: \`${TOTAL_SIZE}\`\n🌐 CDN Ready on HuggingFace."
+          STATUS_MSG="✅ **Batch Upload Complete!** \n🎬 Processed: \`${TOTAL_FILES} video(s)\`\n📦 Total Size: \`${TOTAL_SIZE}\`\n🌐 CDN Ready on HuggingFace."
           
-          echo "Cleaning up queue..."
           ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CHANNEL_ID" delete "$MSG_ID"
-          
-          echo "Sending ping to log channel..."
           ./discord_manager "$DISCORD_TOKEN" "$PING_CHANNEL_ID" send "$STATUS_MSG"
 
       - name: Report Failure to Discord
@@ -364,7 +332,7 @@ jobs:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          FAIL_MSG="❌ **Pipeline Failed!** \n🚨 The Torrent-to-HLS job crashed.\n🔗 [View Action Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+          FAIL_MSG="❌ **Pipeline Failed!** \n🚨 The Torrent/Drive-to-HLS job crashed during execution.\n🔗 [View Action Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
           PAYLOAD=$(jq -n --arg content "$FAIL_MSG" '{content: $content}')
           
           curl -s -H "Authorization: Bot $DISCORD_TOKEN" \

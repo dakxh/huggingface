@@ -62,28 +62,29 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        size_t id_pos = response.find("\"id\": \"");
+        // Removed spaces from JSON keys for minified string parsing
+        size_t id_pos = response.find("\"id\":\"");
         if (id_pos != string::npos) {
-            id_pos += 7;
+            id_pos += 6;
             string msg_id = response.substr(id_pos, response.find("\"", id_pos) - id_pos);
 
             string target_link = "";
-            size_t attach_pos = response.find("\"attachments\": [");
+            size_t attach_pos = response.find("\"attachments\":[");
             size_t url_pos = string::npos;
             
             if (attach_pos != string::npos) {
                 size_t end_attach = response.find("]", attach_pos);
-                url_pos = response.find("\"url\": \"", attach_pos);
+                url_pos = response.find("\"url\":\"", attach_pos);
                 if (url_pos > end_attach) url_pos = string::npos;
             }
 
             if (url_pos != string::npos) {
-                url_pos += 8;
+                url_pos += 7;
                 target_link = response.substr(url_pos, response.find("\"", url_pos) - url_pos);
             } else {
-                size_t content_pos = response.find("\"content\": \"");
+                size_t content_pos = response.find("\"content\":\"");
                 if (content_pos != string::npos) {
-                    content_pos += 12;
+                    content_pos += 11;
                     target_link = response.substr(content_pos, response.find("\"", content_pos) - content_pos);
                     size_t escape = target_link.find("\\n");
                     if (escape != string::npos) target_link = target_link.substr(0, escape);

@@ -1,4 +1,4 @@
-name: experimental
+name: Discord Torrent to HLS Pipeline
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev
-          pip install huggingface_hub
+          pip install huggingface_hub guessit requests
 
       - name: Compile and Fetch from Discord
         id: discord_fetch
@@ -33,7 +33,6 @@ jobs:
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
           
-          # Added the error fallback catch
           if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
             echo "❌ API Error or No valid magnet/torrent found."
             echo "API Trace: $TARGET_LINK"
@@ -64,21 +63,11 @@ jobs:
             aria2c --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
           fi
           
-          # Find the actual downloaded video file
-          ACTUAL_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec basename {} \; | sort -nr | head -n 1)
-          if [ -z "$ACTUAL_FILE" ]; then
+          VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec basename {} \; | sort -nr | head -n 1)
+          if [ -z "$VIDEO_FILE" ]; then
              echo "❌ CRITICAL ERROR: aria2c failed to download the video payload. Exiting."
              exit 1
           fi
-          
-          echo "Compiling and running the C++ Scene Parser..."
-          g++ name_parser.cpp -o name_parser
-          
-          CLEAN_NAME=$(./name_parser "$ACTUAL_FILE")
-          echo "Parsed clean name: $CLEAN_NAME"
-          
-          # Overwrite the temporary timestamp queue name with the perfectly formatted movie name
-          echo "VIDEO_NAME=$CLEAN_NAME" >> $GITHUB_ENV
 
       - name: Process Video, Audio, and Subs into HLS
         if: env.found == 'true'
@@ -195,6 +184,102 @@ jobs:
           HF_BASE="https://huggingface.co/datasets/${{ secrets.HF_REPO }}/resolve/main/${VIDEO_NAME}/"
           find hls_output -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
 
+      - name: Generate Rich Metadata JSON
+        if: env.found == 'true'
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          HF_REPO: ${{ secrets.HF_REPO }}
+        run: |
+          python -c "
+          import os, json, requests, subprocess, glob
+          from guessit import guessit
+
+          print('Extracting actual video file stats...')
+          
+          video_files = glob.glob('workspace/**/*.mkv', recursive=True) + glob.glob('workspace/**/*.mp4', recursive=True)
+          if not video_files:
+              print('❌ No video file found for metadata extraction.')
+              exit(1)
+              
+          file_path = max(video_files, key=os.path.getsize)
+          filename = os.path.basename(file_path)
+
+          g = guessit(filename)
+          title = g.get('title', 'Unknown Title')
+          year = g.get('year', '')
+          quality = g.get('screen_size', 'Unknown Quality')
+
+          size_bytes = os.path.getsize(file_path)
+          size_gb = round(size_bytes / (1024**3), 2)
+          size_str = f'{size_gb} GB'
+
+          duration_formatted = '0m'
+          try:
+              cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
+              result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+              dur_seconds = float(result.stdout.strip())
+              
+              hours = int(dur_seconds // 3600)
+              minutes = int((dur_seconds % 3600) // 60)
+              
+              if hours > 0:
+                  duration_formatted = f'{hours}h{minutes}m'
+              else:
+                  duration_formatted = f'{minutes}m'
+          except Exception as e:
+              print('Failed to get duration:', e)
+
+          hf_repo = os.environ.get('HF_REPO', '')
+          video_name = os.environ.get('VIDEO_NAME', '')
+          hf_base_url = f'https://huggingface.co/datasets/{hf_repo}/resolve/main/{video_name}/'
+
+          metadata = {
+              'id': 0,
+              'original_filename': filename,
+              'title': title,
+              'year': str(year) if year else '',
+              'quality': quality,
+              'duration': duration_formatted,
+              'size': size_str,
+              'rating': 0.0,
+              'poster_url': '',
+              'backdrop_url': '',
+              'hls_manifest_url': f'{hf_base_url}master.m3u8',
+              'overview': ''
+          }
+
+          tmdb_key = os.environ.get('TMDB_API_KEY')
+          if tmdb_key and title != 'Unknown Title':
+              m_type = 'tv' if 'season' in g or 'episode' in g else 'movie'
+              
+              search_url = f'https://api.themoviedb.org/3/search/{m_type}?api_key={tmdb_key}&query={title}'
+              if year:
+                  search_url += f'&year={year}' if m_type == 'movie' else f'&first_air_date_year={year}'
+              
+              try:
+                  res = requests.get(search_url).json()
+                  if res.get('results') and len(res['results']) > 0:
+                      best_match = res['results'][0]
+                      
+                      metadata['id'] = best_match.get('id', 0)
+                      metadata['title'] = best_match.get('title') or best_match.get('name') or title
+                      metadata['overview'] = best_match.get('overview', '')
+                      metadata['rating'] = round(best_match.get('vote_average', 0.0), 1)
+                      
+                      if best_match.get('poster_path'):
+                          metadata['poster_url'] = f'https://image.tmdb.org/t/p/w600_and_h900_bestv2{best_match.get(\"poster_path\")}'
+                      if best_match.get('backdrop_path'):
+                          metadata['backdrop_url'] = f'https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{best_match.get(\"backdrop_path\")}'
+              except Exception as e:
+                  print('TMDB API fetch failed:', e)
+
+          os.makedirs('hls_output', exist_ok=True)
+          with open('hls_output/metadata.json', 'w') as f:
+              json.dump(metadata, f, indent=4)
+          
+          print('✅ Rich Metadata successfully generated and saved.')
+          "
+
       - name: Upload Output to Hugging Face
         if: env.found == 'true'
         env:
@@ -221,9 +306,11 @@ jobs:
           QUEUE_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
+          # Fetch the human-readable title from the generated metadata file
+          CLEAN_TITLE=$(python -c "import json; print(json.load(open('hls_output/metadata.json')).get('title', 'Unknown'))" 2>/dev/null || echo "Unknown")
           TOTAL_SIZE=$(du -sh hls_output | cut -f1)
-          ACTUAL_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec basename {} \; | head -n 1)
-          STATUS_MSG="✅ **Upload Complete!** \n🎬 File: \`${ACTUAL_FILE}\`\n📦 Size: \`${TOTAL_SIZE}\`\n🌐 CDN Ready on HuggingFace."
+          
+          STATUS_MSG="✅ **Upload Complete!** \n🎬 Title: \`${CLEAN_TITLE}\`\n📦 Size: \`${TOTAL_SIZE}\`\n🌐 CDN Ready on HuggingFace."
           
           echo "Cleaning up queue..."
           ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CHANNEL_ID" delete "$MSG_ID"

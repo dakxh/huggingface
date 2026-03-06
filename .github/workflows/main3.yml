@@ -62,7 +62,7 @@ jobs:
               
               if [ -n "$FILE_ID" ]; then
                 echo "🔑 ID Extracted: $FILE_ID"
-                gdown --id "$FILE_ID" -O workspace/
+                gdown "$FILE_ID" -O workspace/
               else
                 echo "⚠️ Could not extract ID, falling back to fuzzy download..."
                 gdown --fuzzy "$TARGET_LINK" -O workspace/

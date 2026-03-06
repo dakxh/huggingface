@@ -51,11 +51,22 @@ jobs:
           echo "Evaluating Payload Type..."
           
           if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
-            echo "🌐 Detected Google Drive Link. Fetching via gdown..."
+            echo "🌐 Detected Google Drive Link."
+            
             if [[ "$TARGET_LINK" == */folders/* ]]; then
+              echo "📂 Fetching Folder..."
               gdown --folder "$TARGET_LINK" -O workspace/
             else
-              gdown --fuzzy "$TARGET_LINK" -O workspace/
+              echo "📄 Extracting exact File ID to bypass Google URL formatting..."
+              FILE_ID=$(echo "$TARGET_LINK" | grep -oP '(id=|/d/)\K[a-zA-Z0-9_-]+' | head -n 1)
+              
+              if [ -n "$FILE_ID" ]; then
+                echo "🔑 ID Extracted: $FILE_ID"
+                gdown --id "$FILE_ID" -O workspace/
+              else
+                echo "⚠️ Could not extract ID, falling back to fuzzy download..."
+                gdown --fuzzy "$TARGET_LINK" -O workspace/
+              fi
             fi
             
           elif [[ "$TARGET_LINK" == http* ]]; then

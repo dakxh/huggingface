@@ -166,8 +166,28 @@ jobs:
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           HF_REPO: ${{ secrets.HF_REPO }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p hls_output
+          
+          # --- INITIALIZE OR FETCH GLOBAL CATALOG ---
+          python -c "
+          import os, json, shutil
+          from huggingface_hub import hf_hub_download
+          
+          repo = os.environ.get('HF_REPO')
+          token = os.environ.get('HF_TOKEN')
+          catalog_path = 'hls_output/global_catalog.json'
+          
+          try:
+              dl_path = hf_hub_download(repo_id=repo, filename='global_catalog.json', repo_type='dataset', token=token)
+              shutil.copy(dl_path, catalog_path)
+              print('✅ Successfully pulled existing global_catalog.json')
+          except Exception as e:
+              print('⚠️ No existing global_catalog.json found (or repo empty). Initializing a new one.')
+              with open(catalog_path, 'w') as f:
+                  f.write('[]')
+          "
           
           while read -u 9 VIDEO_FILE; do
             echo "================================================================"
@@ -445,7 +465,7 @@ jobs:
             HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
 
-            # 3. HIGH-FUNCTIONAL METADATA GENERATOR
+            # 3. HIGH-FUNCTIONAL METADATA GENERATOR + CATALOG APPEND
             python -c "
           import os, json, requests, subprocess, sys, re, time
           from guessit import guessit
@@ -516,6 +536,17 @@ jobs:
 
           tmdb_key = os.environ.get('TMDB_API_KEY')
           
+          # --- LOAD GLOBAL CATALOG ---
+          catalog_path = 'hls_output/global_catalog.json'
+          try:
+              with open(catalog_path, 'r') as f:
+                  catalog = json.load(f)
+          except:
+              catalog = []
+              
+          # Deduplicate: Remove the existing entry if it shares the exact manifest URL (prevents duplicates on re-runs)
+          catalog = [item for item in catalog if item.get('hls_manifest_url') != manifest_url]
+          
           if sub_dir:
               # ====== TV SHOW ======
               s_val = g.get('season')
@@ -542,11 +573,9 @@ jobs:
                       with open(show_meta_path, 'r') as f:
                           existing_data = json.load(f)
                           show_meta.update(existing_data)
-                          # Update the timestamp so it jumps to top of Recently Added row
                           show_meta['date_added'] = date_added
                   except: pass
                   
-              # Calculate Running Average Duration
               show_meta['_total_secs'] += dur_seconds
               show_meta['_ep_count'] += 1
               show_meta['duration'] = format_dur(show_meta['_total_secs'] / show_meta['_ep_count'])
@@ -586,6 +615,7 @@ jobs:
                   
               ep_meta = {
                   'id': show_meta['id'],
+                  'series_title': title, # <-- Series Title injected here
                   'season_number': season_num,
                   'episode_number': episode_num,
                   'episode_name': episode_name,
@@ -600,6 +630,21 @@ jobs:
               }
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
                   json.dump(ep_meta, f, indent=4)
+                  
+              # 3. Append to Global Catalog
+              catalog_entry = {
+                  'id': show_meta['id'],
+                  'type': 'episode',
+                  'series_title': title,
+                  'title': episode_name,
+                  'season_number': season_num,
+                  'episode_number': episode_num,
+                  'quality': quality,
+                  'date_added': date_added,
+                  'hls_manifest_url': manifest_url,
+                  'poster_url': show_meta.get('poster_url', '')
+              }
+              catalog.append(catalog_entry)
                       
           else:
               # ====== MOVIE ======
@@ -629,6 +674,24 @@ jobs:
                   except: pass
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
                   json.dump(movie_meta, f, indent=4)
+                  
+              # Append to Global Catalog
+              catalog_entry = {
+                  'id': movie_meta['id'],
+                  'type': 'movie',
+                  'title': movie_meta['title'],
+                  'year': movie_meta['year'],
+                  'quality': movie_meta['quality'],
+                  'date_added': date_added,
+                  'hls_manifest_url': manifest_url,
+                  'poster_url': movie_meta.get('poster_url', '')
+              }
+              catalog.append(catalog_entry)
+              
+          # Save Catalog Update
+          with open(catalog_path, 'w') as f:
+              json.dump(catalog, f, indent=4)
+              
           " "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_SUBS"
 
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))

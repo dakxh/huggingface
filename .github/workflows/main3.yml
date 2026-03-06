@@ -19,7 +19,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
-          pip install huggingface_hub guessit requests gdown
+          pip install huggingface_hub guessit requests google-api-python-client google-auth
 
       - name: Compile and Fetch from Discord
         id: discord_fetch
@@ -46,37 +46,94 @@ jobs:
 
       - name: Download and Extract Payload
         if: env.found == 'true'
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
         run: |
           mkdir -p workspace
           echo "Evaluating Payload Type..."
           
           if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
+            echo "🌐 Detected Google Drive Link. Initializing Enterprise Server-Side Clone Engine..."
             
-            # --- THE IDM WORKAROUND: Pre-Authenticated Direct Links ---
-            if [[ "$TARGET_LINK" == *\&at=* ]] || [[ "$TARGET_LINK" == *confirm=t* ]]; then
-              echo "🚀 Detected Pre-Authenticated Direct Drive Link. Bypassing APIs and fetching natively..."
-              cd workspace
-              curl -# -L -OJ "$TARGET_LINK"
-              cd ..
-            else
-            # --- STANDARD GDOWN FALLBACK ---
-              echo "🌐 Detected Standard Google Drive Link. Initializing gdown engine..."
-              if [[ "$TARGET_LINK" == */folders/* ]]; then
-                echo "📂 Fetching Folder..."
-                gdown --folder "$TARGET_LINK" -O workspace/
-              else
-                echo "📄 Extracting exact File ID to bypass Google URL formatting..."
-                FILE_ID=$(echo "$TARGET_LINK" | grep -oP '(id=|/d/|folders/)\K[a-zA-Z0-9_-]+' | head -n 1)
-                
-                if [ -n "$FILE_ID" ]; then
-                  echo "🔑 ID Extracted: $FILE_ID"
-                  gdown "$FILE_ID" -O workspace/
-                else
-                  echo "⚠️ Could not extract ID, falling back to fuzzy download..."
-                  gdown --fuzzy "$TARGET_LINK" -O workspace/
-                fi
-              fi
-            fi
+            cat << 'EOF' > gdrive_sa_clone.py
+          import os, sys, re, json, io
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          link = sys.argv[1]
+          sa_json_str = os.environ.get('GCP_SA_JSON')
+
+          if not sa_json_str:
+              print("❌ CRITICAL ERROR: GCP_SA_JSON secret is missing.")
+              print("You must create a Google Cloud Service Account and paste the JSON into GitHub Secrets.")
+              sys.exit(1)
+
+          try:
+              sa_info = json.loads(sa_json_str)
+              creds = service_account.Credentials.from_service_account_info(sa_info, scopes=['https://www.googleapis.com/auth/drive'])
+              drive_service = build('drive', 'v3', credentials=creds)
+          except Exception as e:
+              print(f"❌ Authentication Failed: {e}")
+              sys.exit(1)
+
+          match = re.search(r'(id=|/d/|folders/)([a-zA-Z0-9_-]+)', link)
+          if not match:
+              print("❌ Could not extract ID from link.")
+              sys.exit(1)
+          file_id = match.group(2)
+
+          def download_file(fid, fname):
+              print(f"\n🧬 Bypassing Quota: Server-Side Cloning '{fname}'...")
+              try:
+                  clone_meta = {'name': f"CLONE_{fname}"}
+                  clone = drive_service.files().copy(fileId=fid, body=clone_meta).execute()
+                  clone_id = clone.get('id')
+              except Exception as e:
+                  print(f"❌ Failed to clone file: {e}")
+                  print("⚠️ Make sure you clicked 'Share' on the file and added the Service Account Email as a Viewer!")
+                  sys.exit(1)
+                  
+              print(f"⬇️ Downloading Clone from Backend Servers...")
+              try:
+                  request = drive_service.files().get_media(fileId=clone_id)
+                  fh = io.FileIO(os.path.join("workspace", fname), 'wb')
+                  downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024*25)
+                  done = False
+                  while not done:
+                      status, done = downloader.next_chunk()
+                      if status:
+                          print(f"Progress: {int(status.progress() * 100)}%", end='\r')
+                  print(f"\n✅ Download complete: {fname}")
+              finally:
+                  print(f"🧹 Destroying server-side clone to free space...")
+                  drive_service.files().delete(fileId=clone_id).execute()
+
+          def process_node(fid):
+              print(f"🔍 Inspecting Drive ID: {fid}")
+              try:
+                  node = drive_service.files().get(fileId=fid, fields='name, mimeType').execute()
+              except Exception as e:
+                  print(f"❌ API Error: {e}")
+                  print("⚠️ Did you forget to share the file/folder with the Service Account email?")
+                  sys.exit(1)
+
+              if node.get('mimeType') == 'application/vnd.google-apps.folder':
+                  print(f"📂 Detected Folder: {node['name']}. Traversing contents...")
+                  query = f"'{fid}' in parents and trashed=false"
+                  results = drive_service.files().list(q=query, fields="files(id, name, mimeType)").execute()
+                  for child in results.get('files', []):
+                      if child['mimeType'] == 'application/vnd.google-apps.folder':
+                          process_node(child['id'])
+                      else:
+                          download_file(child['id'], child['name'])
+              else:
+                  download_file(fid, node['name'])
+
+          process_node(file_id)
+          EOF
+            
+            python gdrive_sa_clone.py "$TARGET_LINK"
             
           elif [[ "$TARGET_LINK" == http* ]]; then
             echo "📎 Detected HTTP Link. Fetching torrent file explicitly..."

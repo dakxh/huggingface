@@ -53,9 +53,9 @@ jobs:
           echo "Evaluating Payload Type..."
           
           if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
-            echo "🌐 Detected Google Drive Link. Initializing Enterprise Server-Side Clone Engine..."
+            echo "🌐 Detected Google Drive Link. Initializing Enterprise SA Downloader..."
             
-            cat << 'EOF' > gdrive_sa_clone.py
+            cat << 'EOF' > gdrive_sa_dl.py
           import os, sys, re, json, io
           from google.oauth2 import service_account
           from googleapiclient.discovery import build
@@ -66,12 +66,11 @@ jobs:
 
           if not sa_json_str:
               print("❌ CRITICAL ERROR: GCP_SA_JSON secret is missing.")
-              print("You must create a Google Cloud Service Account and paste the JSON into GitHub Secrets.")
               sys.exit(1)
 
           try:
               sa_info = json.loads(sa_json_str)
-              creds = service_account.Credentials.from_service_account_info(sa_info, scopes=['https://www.googleapis.com/auth/drive'])
+              creds = service_account.Credentials.from_service_account_info(sa_info, scopes=['https://www.googleapis.com/auth/drive.readonly'])
               drive_service = build('drive', 'v3', credentials=creds)
           except Exception as e:
               print(f"❌ Authentication Failed: {e}")
@@ -84,19 +83,9 @@ jobs:
           file_id = match.group(2)
 
           def download_file(fid, fname):
-              print(f"\n🧬 Bypassing Quota: Server-Side Cloning '{fname}'...")
+              print(f"⬇️ Authenticated SA Download: {fname}...")
               try:
-                  clone_meta = {'name': f"CLONE_{fname}"}
-                  clone = drive_service.files().copy(fileId=fid, body=clone_meta).execute()
-                  clone_id = clone.get('id')
-              except Exception as e:
-                  print(f"❌ Failed to clone file: {e}")
-                  print("⚠️ Make sure you clicked 'Share' on the file and added the Service Account Email as a Viewer!")
-                  sys.exit(1)
-                  
-              print(f"⬇️ Downloading Clone from Backend Servers...")
-              try:
-                  request = drive_service.files().get_media(fileId=clone_id)
+                  request = drive_service.files().get_media(fileId=fid)
                   fh = io.FileIO(os.path.join("workspace", fname), 'wb')
                   downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024*25)
                   done = False
@@ -105,9 +94,10 @@ jobs:
                       if status:
                           print(f"Progress: {int(status.progress() * 100)}%", end='\r')
                   print(f"\n✅ Download complete: {fname}")
-              finally:
-                  print(f"🧹 Destroying server-side clone to free space...")
-                  drive_service.files().delete(fileId=clone_id).execute()
+              except Exception as e:
+                  print(f"\n❌ Download Failed: {e}")
+                  print("⚠️ Ensure the Service Account email is added as a Viewer on this file!")
+                  sys.exit(1)
 
           def process_node(fid):
               print(f"🔍 Inspecting Drive ID: {fid}")
@@ -133,7 +123,7 @@ jobs:
           process_node(file_id)
           EOF
             
-            python gdrive_sa_clone.py "$TARGET_LINK"
+            python gdrive_sa_dl.py "$TARGET_LINK"
             
           elif [[ "$TARGET_LINK" == http* ]]; then
             echo "📎 Detected HTTP Link. Fetching torrent file explicitly..."

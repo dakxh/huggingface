@@ -167,7 +167,7 @@ jobs:
                   e = anime_match.group(1)
                   vid_type = 'episode'
 
-          # Fix 2: Catch subtitles/arcs for Anime Movies (e.g. The Reze Arc)
+          # Catch subtitles/arcs for Anime Movies (e.g. The Reze Arc)
           ep_title = str(g.get('episode_title', '')).title().replace(' ', '.')
           if ep_title and vid_type != 'episode':
               title = f'{title}.{ep_title}'
@@ -178,7 +178,7 @@ jobs:
               s_val = int(s[0] if isinstance(s, list) else s) if s else 1
               e_val = int(e[0] if isinstance(e, list) else e) if e else 1
               
-              # Fix 1: Append Year and Quality to the Parent Show Folder
+              # Append Year and Quality to the Parent Show Folder
               base_dir = title
               if year: base_dir += f'.{year}'
               if quality: base_dir += f'.{quality}'
@@ -284,7 +284,7 @@ jobs:
             HAS_SUBS="false"
             echo "" >> "hls_output/$TARGET_DIR/master.m3u8"
             
-            # --- PASS 1 & 2: SUBTITLE LOGIC (Remains Unchanged) ---
+            # --- PASS 1 & 2: SUBTITLE LOGIC ---
             while IFS=',' read -r index ctype lang title; do
               if [[ "$ctype" == "subtitle" ]]; then
                 if [[ "$lang $title" =~ $LANG_REGEX ]]; then
@@ -305,6 +305,50 @@ jobs:
                 fi
               fi
             done <<< "$STREAMS"
+            
+            if [[ "$HAS_SUBS" == "false" ]]; then
+              echo "⚠️ No matching subtitles found. Scanning unidentified tracks for English..."
+              
+              cat << 'EOF' > detect_eng.py
+          import sys, re
+          try:
+              with open(sys.argv[1], 'r', encoding='utf-8', errors='ignore') as f:
+                  text = f.read().lower()
+              words = re.findall(r'\b[a-z]{2,5}\b', text)
+              eng = {'the','and','that','have','for','not','with','you','this','but','his','from','they','say','she','will','what','who','get','when','make','can','like','time','just','know','take','your','good','some','could','them','other','than','then','now','look','only','come','over','think','also','back','after','how','our','first','well','way','even','want','because','any','these','give','most','are','was','were'}
+              print('true' if sum(1 for w in words if w in eng) > 15 else 'false')
+          except:
+              print('false')
+          EOF
+
+              while IFS=',' read -r index ctype lang title; do
+                if [[ "$ctype" == "subtitle" ]]; then
+                  SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                  if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt)$ ]]; then
+                    TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
+                    
+                    if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1; then
+                      if [ -s "$TEMP_VTT" ]; then
+                        IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")
+                        
+                        if [[ "$IS_ENGLISH" == "true" ]]; then
+                          echo "✅ English auto-detected in track index $index!"
+                          mv "$TEMP_VTT" "hls_output/$TARGET_DIR/subs_${index}_eng.vtt"
+                          HAS_SUBS="true"
+                          printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="English (Auto)",LANGUAGE="eng",URI="%s"\n' "subs_${index}_eng.vtt" >> "hls_output/$TARGET_DIR/master.m3u8"
+                          break
+                        else
+                          rm -f "$TEMP_VTT"
+                        fi
+                      else
+                        rm -f "$TEMP_VTT"
+                      fi
+                    fi
+                  fi
+                fi
+              done <<< "$STREAMS"
+              rm -f detect_eng.py
+            fi
             
             if [[ "$HAS_SUBS" == "true" ]]; then
               sed -i '/RESOLUTION=/ s/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/' "hls_output/$TARGET_DIR/master.m3u8"
@@ -329,19 +373,43 @@ jobs:
           
           title = g.get('title', 'Unknown Title')
           year = str(g.get('year', ''))
-          quality = g.get('screen_size', '')
+          quality = str(g.get('screen_size', ''))
 
-          size_bytes = os.path.getsize(file_path)
-          size_str = f'{round(size_bytes / (1024**3), 2)} GB'
+          # --- STRICT SOURCE LOGIC ---
+          fmt = str(g.get('format', '')).lower()
+          source = 'BluRay' if 'bluray' in fmt or 'brrip' in fmt or 'bdrip' in filename.lower() else 'WEB-DL'
 
-          duration_formatted = '0m'
+          # --- DURATION LOGIC (Seconds) ---
+          dur_seconds = 0.0
           try:
               cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
               res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-              dur = float(res.stdout.strip())
-              h, m = int(dur // 3600), int((dur % 3600) // 60)
-              duration_formatted = f'{h}h{m}m' if h > 0 else f'{m}m'
+              dur_seconds = float(res.stdout.strip())
           except: pass
+
+          def format_dur(secs):
+              h, m = int(secs // 3600), int((secs % 3600) // 60)
+              return f'{h}h{m}m' if h > 0 else f'{m}m'
+              
+          duration_formatted = format_dur(dur_seconds)
+
+          # --- IMAX ASPECT RATIO CHECK ---
+          is_imax = False
+          if 'imax' in filename.lower():
+              is_imax = True
+          else:
+              try:
+                  cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file_path]
+                  res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                  w, h = map(float, res.stdout.strip().split('x'))
+                  ar = w / h
+                  # True IMAX (1.43:1) or Digital IMAX (1.90:1). We allow a slight margin.
+                  if (1.40 <= ar <= 1.45) or (1.85 <= ar <= 1.95):
+                      is_imax = True
+              except: pass
+
+          size_bytes = os.path.getsize(file_path)
+          size_str = f'{round(size_bytes / (1024**3), 2)} GB'
 
           hf_repo = os.environ.get('HF_REPO', '')
           import urllib.parse
@@ -351,45 +419,56 @@ jobs:
           tmdb_key = os.environ.get('TMDB_API_KEY')
           
           if sub_dir:
-              # --- IT'S A TV EPISODE ---
+              # ====== TV SHOW ======
               ep_match = re.search(r'Episode\.(\d+)', sub_dir)
               ep_num = ep_match.group(1) if ep_match else '01'
               
-              # 1. Write Rich Show Metadata (Only if it doesn't exist yet)
+              # 1. Build & Update Topmost Series Metadata
               show_meta_path = f'hls_output/{base_dir}/metadata.json'
-              show_id = 0
-              if not os.path.exists(show_meta_path):
-                  show_meta = {
-                      'id': 0, 'title': title, 'year': year, 'rating': 0.0,
-                      'poster_url': '', 'backdrop_url': '', 'overview': ''
-                  }
-                  if tmdb_key and title != 'Unknown Title':
-                      search_url = f'https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={title}'
-                      try:
-                          res = requests.get(search_url).json()
-                          if res.get('results'):
-                              match = res['results'][0]
-                              show_meta['id'] = match.get('id', 0)
-                              show_id = show_meta['id']
-                              show_meta['title'] = match.get('name', title)
-                              if not show_meta['year']: show_meta['year'] = match.get('first_air_date', '')[:4]
-                              show_meta['overview'] = match.get('overview', '')
-                              show_meta['rating'] = round(match.get('vote_average', 0.0), 1)
-                              if match.get('poster_path'): show_meta['poster_url'] = f'https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get(\"poster_path\")}'
-                              if match.get('backdrop_path'): show_meta['backdrop_url'] = f'https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get(\"backdrop_path\")}'
-                      except: pass
-                  with open(show_meta_path, 'w') as f:
-                      json.dump(show_meta, f, indent=4)
-              else:
+              show_meta = {
+                  'id': 0, 'type': 'series', 'title': title, 'year': year, 'rating': 0.0,
+                  'source': source, 'quality': quality, 'duration': '0m', 'IMAX': is_imax,
+                  'poster_url': '', 'backdrop_url': '', 'overview': '',
+                  '_total_secs': 0.0, '_ep_count': 0
+              }
+              
+              if os.path.exists(show_meta_path):
                   try:
                       with open(show_meta_path, 'r') as f:
-                          existing_meta = json.load(f)
-                          show_id = existing_meta.get('id', 0)
+                          show_meta.update(json.load(f))
                   except: pass
+                  
+              # Calculate Running Average Duration
+              show_meta['_total_secs'] += dur_seconds
+              show_meta['_ep_count'] += 1
+              show_meta['duration'] = format_dur(show_meta['_total_secs'] / show_meta['_ep_count'])
+              
+              # Ensure quality/source reflect the highest standard downloaded
+              show_meta['quality'] = quality
+              show_meta['source'] = source
+              if is_imax: show_meta['IMAX'] = True
+                  
+              if tmdb_key and title != 'Unknown Title' and show_meta['id'] == 0:
+                  search_url = f'https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={title}'
+                  try:
+                      res = requests.get(search_url).json()
+                      if res.get('results'):
+                          match = res['results'][0]
+                          show_meta['id'] = match.get('id', 0)
+                          show_meta['title'] = match.get('name', title)
+                          if not show_meta['year']: show_meta['year'] = match.get('first_air_date', '')[:4]
+                          show_meta['overview'] = match.get('overview', '')
+                          show_meta['rating'] = round(match.get('vote_average', 0.0), 1)
+                          if match.get('poster_path'): show_meta['poster_url'] = f'https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get(\"poster_path\")}'
+                          if match.get('backdrop_path'): show_meta['backdrop_url'] = f'https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get(\"backdrop_path\")}'
+                  except: pass
+                  
+              with open(show_meta_path, 'w') as f:
+                  json.dump(show_meta, f, indent=4)
                   
               # 2. Write Lean Episode Metadata
               ep_meta = {
-                  'id': show_id,
+                  'id': show_meta['id'],
                   'original_filename': filename,
                   'title': f'Episode {ep_num}',
                   'quality': quality,
@@ -401,11 +480,11 @@ jobs:
                   json.dump(ep_meta, f, indent=4)
                       
           else:
-              # --- IT'S A MOVIE ---
+              # ====== MOVIE ======
               movie_meta = {
-                  'id': 0, 'original_filename': filename, 'title': title,
-                  'year': year, 'quality': quality, 'duration': duration_formatted,
-                  'size': size_str, 'rating': 0.0, 'poster_url': '',
+                  'id': 0, 'type': 'movie', 'original_filename': filename, 'title': title,
+                  'year': year, 'rating': 0.0, 'source': source, 'quality': quality, 
+                  'duration': duration_formatted, 'IMAX': is_imax, 'poster_url': '',
                   'backdrop_url': '', 'hls_manifest_url': manifest_url, 'overview': ''
               }
               if tmdb_key and title != 'Unknown Title':

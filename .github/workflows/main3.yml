@@ -156,13 +156,6 @@ jobs:
           vid_type = g.get('type')
           title = str(g.get('title', 'Unknown_Series')).title().replace(' ', '.')
           
-          # Fix 2: Catch subtitles/arcs for Anime Movies (e.g. The Reze Arc)
-          ep_title = str(g.get('episode_title', '')).title().replace(' ', '.')
-          if ep_title and vid_type != 'episode':
-              title = f'{title}.{ep_title}'
-              
-          title = re.sub(r'[^a-zA-Z0-9.\-]', '', title)
-          
           year = str(g.get('year', ''))
           quality = str(g.get('screen_size', ''))
           s = g.get('season')
@@ -173,6 +166,13 @@ jobs:
               if anime_match:
                   e = anime_match.group(1)
                   vid_type = 'episode'
+
+          # Fix 2: Catch subtitles/arcs for Anime Movies (e.g. The Reze Arc)
+          ep_title = str(g.get('episode_title', '')).title().replace(' ', '.')
+          if ep_title and vid_type != 'episode':
+              title = f'{title}.{ep_title}'
+              
+          title = re.sub(r'[^a-zA-Z0-9.\-]', '', title)
                   
           if vid_type == 'episode' or e:
               s_val = int(s[0] if isinstance(s, list) else s) if s else 1
@@ -355,20 +355,9 @@ jobs:
               ep_match = re.search(r'Episode\.(\d+)', sub_dir)
               ep_num = ep_match.group(1) if ep_match else '01'
               
-              # 1. Write Lean Episode Metadata
-              ep_meta = {
-                  'original_filename': filename,
-                  'title': f'Episode {ep_num}',
-                  'quality': quality,
-                  'duration': duration_formatted,
-                  'size': size_str,
-                  'hls_manifest_url': manifest_url
-              }
-              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
-                  json.dump(ep_meta, f, indent=4)
-                  
-              # 2. Write Rich Show Metadata (Only if it doesn't exist yet)
+              # 1. Write Rich Show Metadata (Only if it doesn't exist yet)
               show_meta_path = f'hls_output/{base_dir}/metadata.json'
+              show_id = 0
               if not os.path.exists(show_meta_path):
                   show_meta = {
                       'id': 0, 'title': title, 'year': year, 'rating': 0.0,
@@ -381,6 +370,7 @@ jobs:
                           if res.get('results'):
                               match = res['results'][0]
                               show_meta['id'] = match.get('id', 0)
+                              show_id = show_meta['id']
                               show_meta['title'] = match.get('name', title)
                               if not show_meta['year']: show_meta['year'] = match.get('first_air_date', '')[:4]
                               show_meta['overview'] = match.get('overview', '')
@@ -390,6 +380,25 @@ jobs:
                       except: pass
                   with open(show_meta_path, 'w') as f:
                       json.dump(show_meta, f, indent=4)
+              else:
+                  try:
+                      with open(show_meta_path, 'r') as f:
+                          existing_meta = json.load(f)
+                          show_id = existing_meta.get('id', 0)
+                  except: pass
+                  
+              # 2. Write Lean Episode Metadata
+              ep_meta = {
+                  'id': show_id,
+                  'original_filename': filename,
+                  'title': f'Episode {ep_num}',
+                  'quality': quality,
+                  'duration': duration_formatted,
+                  'size': size_str,
+                  'hls_manifest_url': manifest_url
+              }
+              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
+                  json.dump(ep_meta, f, indent=4)
                       
           else:
               # --- IT'S A MOVIE ---

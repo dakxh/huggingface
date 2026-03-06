@@ -145,21 +145,33 @@ jobs:
             echo "🎬 PROCESSING FILE: $VIDEO_FILE"
             BASENAME=$(basename "$VIDEO_FILE")
             
-            # 1. DYNAMIC ROUTING (GuessIt)
+            # 1. DYNAMIC ROUTING & COLLISION PREVENTION
             TARGET_DIR=$(python -c "
           import sys, re
           from guessit import guessit
-          g = guessit(sys.argv[1])
-          if g.get('type') == 'episode':
-              title = str(g.get('title', 'Unknown_Series')).title().replace(' ', '.')
-              title = re.sub(r'[^a-zA-Z0-9.\-]', '', title)
-              s = g.get('season', 1)
-              e = g.get('episode', 1)
-              s = s[0] if isinstance(s, list) else s
-              e = e[0] if isinstance(e, list) else e
-              print(f'{title}/Season {int(s):02d}/Episode {int(e):02d}')
+          
+          filename = sys.argv[1]
+          g = guessit(filename)
+          
+          vid_type = g.get('type')
+          title = str(g.get('title', 'Unknown_Series')).title().replace(' ', '.')
+          title = re.sub(r'[^a-zA-Z0-9.\-]', '', title)
+          
+          s = g.get('season')
+          e = g.get('episode')
+          
+          # --- AGGRESSIVE ANIME REGEX FALLBACK ---
+          if not e:
+              anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', filename)
+              if anime_match:
+                  e = anime_match.group(1)
+                  vid_type = 'episode'
+                  
+          if vid_type == 'episode' or e:
+              s_val = int(s[0] if isinstance(s, list) else s) if s else 1
+              e_val = int(e[0] if isinstance(e, list) else e) if e else 1
+              print(f'{title}/Season.{s_val:02d}/Episode.{e_val:02d}')
           else:
-              title = str(g.get('title', 'Unknown')).replace(' ', '.')
               year = g.get('year', '')
               quality = g.get('screen_size', '')
               clean_name = title
@@ -168,7 +180,16 @@ jobs:
               print(re.sub(r'[^a-zA-Z0-9.\-]', '', clean_name))
           " "$BASENAME")
             
-            echo "📁 Target HF Directory: $TARGET_DIR"
+            # --- BASH COLLISION LOCK ---
+            ORIG_TARGET_DIR="$TARGET_DIR"
+            COUNTER=2
+            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+              echo "⚠️ Collision detected! $TARGET_DIR already exists."
+              TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
+              COUNTER=$((COUNTER+1))
+            done
+            
+            echo "📁 Final Safe HF Directory: $TARGET_DIR"
             mkdir -p "hls_output/$TARGET_DIR"
             
             # 2. FFMPEG TRANSCODING

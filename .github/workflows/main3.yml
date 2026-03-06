@@ -51,21 +51,30 @@ jobs:
           echo "Evaluating Payload Type..."
           
           if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
-            echo "🌐 Detected Google Drive Link. Initializing gdown engine..."
             
-            if [[ "$TARGET_LINK" == */folders/* ]]; then
-              echo "📂 Fetching Folder..."
-              gdown --folder "$TARGET_LINK" -O workspace/
+            # --- THE IDM WORKAROUND: Pre-Authenticated Direct Links ---
+            if [[ "$TARGET_LINK" == *\&at=* ]] || [[ "$TARGET_LINK" == *confirm=t* ]]; then
+              echo "🚀 Detected Pre-Authenticated Direct Drive Link. Bypassing APIs and fetching natively..."
+              cd workspace
+              curl -# -L -OJ "$TARGET_LINK"
+              cd ..
             else
-              echo "📄 Extracting exact File ID to bypass Google URL formatting..."
-              FILE_ID=$(echo "$TARGET_LINK" | grep -oP '(id=|/d/|folders/)\K[a-zA-Z0-9_-]+' | head -n 1)
-              
-              if [ -n "$FILE_ID" ]; then
-                echo "🔑 ID Extracted: $FILE_ID"
-                gdown "$FILE_ID" -O workspace/
+            # --- STANDARD GDOWN FALLBACK ---
+              echo "🌐 Detected Standard Google Drive Link. Initializing gdown engine..."
+              if [[ "$TARGET_LINK" == */folders/* ]]; then
+                echo "📂 Fetching Folder..."
+                gdown --folder "$TARGET_LINK" -O workspace/
               else
-                echo "⚠️ Could not extract ID, falling back to fuzzy download..."
-                gdown --fuzzy "$TARGET_LINK" -O workspace/
+                echo "📄 Extracting exact File ID to bypass Google URL formatting..."
+                FILE_ID=$(echo "$TARGET_LINK" | grep -oP '(id=|/d/|folders/)\K[a-zA-Z0-9_-]+' | head -n 1)
+                
+                if [ -n "$FILE_ID" ]; then
+                  echo "🔑 ID Extracted: $FILE_ID"
+                  gdown "$FILE_ID" -O workspace/
+                else
+                  echo "⚠️ Could not extract ID, falling back to fuzzy download..."
+                  gdown --fuzzy "$TARGET_LINK" -O workspace/
+                fi
               fi
             fi
             

@@ -19,7 +19,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
-          pip install huggingface_hub guessit requests
+          pip install huggingface_hub guessit requests gdown
 
       - name: Compile and Fetch from Discord
         id: discord_fetch
@@ -46,68 +46,28 @@ jobs:
 
       - name: Download and Extract Payload
         if: env.found == 'true'
-        env:
-          GDRIVE_API_KEY: ${{ secrets.GDRIVE_API_KEY }}
         run: |
           mkdir -p workspace
           echo "Evaluating Payload Type..."
           
           if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
-            echo "🌐 Detected Google Drive Link. Initializing Official API Engine..."
+            echo "🌐 Detected Google Drive Link. Initializing gdown engine..."
             
-            cat << 'EOF' > gdrive_dl.py
-          import os, sys, requests, re
-
-          link = sys.argv[1]
-          api_key = os.environ.get('GDRIVE_API_KEY')
-
-          if not api_key:
-              print("❌ CRITICAL ERROR: GDRIVE_API_KEY secret is missing!")
-              print("You must generate a free Google Cloud API Key and add it to your GitHub Secrets.")
-              sys.exit(1)
-
-          match = re.search(r'(id=|/d/|folders/)([a-zA-Z0-9_-]+)', link)
-          if not match:
-              print("❌ Could not extract ID from link.")
-              sys.exit(1)
-          file_id = match.group(2)
-
-          def download_file(fid, fname):
-              print(f"⬇️ Downloading: {fname}...")
-              url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&acknowledgeAbuse=true&key={api_key}"
-              with requests.get(url, stream=True) as r:
-                  if r.status_code != 200:
-                      print(f"❌ API Error: {r.text}")
-                      sys.exit(1)
-                  with open(os.path.join("workspace", fname), 'wb') as f:
-                      for chunk in r.iter_content(chunk_size=1024*1024):
-                          if chunk: f.write(chunk)
-              print(f"✅ Download complete: {fname}")
-
-          def process_node(fid):
-              print(f"🔍 Inspecting Drive ID: {fid}...")
-              url = f"https://www.googleapis.com/drive/v3/files/{fid}?fields=name,mimeType&key={api_key}"
-              res = requests.get(url).json()
-              if 'error' in res:
-                  print(f"❌ API Error: {res['error']['message']}")
-                  sys.exit(1)
+            if [[ "$TARGET_LINK" == */folders/* ]]; then
+              echo "📂 Fetching Folder..."
+              gdown --folder "$TARGET_LINK" -O workspace/
+            else
+              echo "📄 Extracting exact File ID to bypass Google URL formatting..."
+              FILE_ID=$(echo "$TARGET_LINK" | grep -oP '(id=|/d/|folders/)\K[a-zA-Z0-9_-]+' | head -n 1)
               
-              if res.get('mimeType') == 'application/vnd.google-apps.folder':
-                  print(f"📂 Detected Folder: {res['name']}. Fetching contents...")
-                  q_url = f"https://www.googleapis.com/drive/v3/files?q='{fid}'+in+parents&fields=files(id,name,mimeType)&key={api_key}"
-                  files = requests.get(q_url).json().get('files', [])
-                  for f in files:
-                      if f['mimeType'] == 'application/vnd.google-apps.folder':
-                          process_node(f['id'])
-                      else:
-                          download_file(f['id'], f['name'])
-              else:
-                  download_file(fid, res['name'])
-
-          process_node(file_id)
-          EOF
-            
-            python gdrive_dl.py "$TARGET_LINK"
+              if [ -n "$FILE_ID" ]; then
+                echo "🔑 ID Extracted: $FILE_ID"
+                gdown "$FILE_ID" -O workspace/
+              else
+                echo "⚠️ Could not extract ID, falling back to fuzzy download..."
+                gdown --fuzzy "$TARGET_LINK" -O workspace/
+              fi
+            fi
             
           elif [[ "$TARGET_LINK" == http* ]]; then
             echo "📎 Detected HTTP Link. Fetching torrent file explicitly..."

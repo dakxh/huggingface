@@ -256,11 +256,15 @@ jobs:
             VAR_STREAM_MAP="v:0,agroup:audio "
             AUDIO_ENCODING=""
             A_IDX=0
+            
+            # SEPARATED REGEXES HERE
             LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
+            AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese)([^a-z]|$)"
             
             while IFS=',' read -r index ctype lang title; do
               if [[ "$ctype" == "audio" ]]; then
-                if [[ "$lang $title" =~ $LANG_REGEX ]]; then
+                # Used AUDIO_LANG_REGEX here
+                if [[ "$lang $title" =~ $AUDIO_LANG_REGEX ]]; then
                   AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
                   VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
                   CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
@@ -319,6 +323,7 @@ jobs:
             # --- PASS 1 & 2: SUBTITLE LOGIC ---
             while IFS=',' read -r index ctype lang title; do
               if [[ "$ctype" == "subtitle" ]]; then
+                # Original LANG_REGEX untouched here
                 if [[ "$lang $title" =~ $LANG_REGEX ]]; then
                   SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt)$ ]]; then

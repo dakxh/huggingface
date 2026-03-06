@@ -69,11 +69,11 @@ jobs:
           fi
           
           echo "📦 Scanning for ZIP archives..."
-          find workspace -type f -name "*.zip" | while read ZIP_FILE; do
+          while read -u 9 ZIP_FILE; do
             echo "Extracting archive: $ZIP_FILE"
-            unzip -q "$ZIP_FILE" -d workspace/
+            unzip -q -o "$ZIP_FILE" -d workspace/
             rm "$ZIP_FILE"
-          done
+          done 9< <(find workspace -type f -name "*.zip")
           
           VIDEO_COUNT=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l)
           if [ "$VIDEO_COUNT" -eq 0 ]; then
@@ -89,7 +89,7 @@ jobs:
         run: |
           mkdir -p hls_output
           
-          find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | while read VIDEO_FILE; do
+          while read -u 9 VIDEO_FILE; do
             echo "================================================================"
             echo "🎬 PROCESSING FILE: $VIDEO_FILE"
             BASENAME=$(basename "$VIDEO_FILE")
@@ -165,7 +165,6 @@ jobs:
             fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             
-            # --- FFMPEG FIX: -nostdin added here ---
             if ! ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -max_muxing_queue_size 9999 -f hls -hls_segment_type fmp4 -hls_flags single_file \
@@ -199,7 +198,6 @@ jobs:
                   SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt)$ ]]; then
                     VTT_FILE="hls_output/$TARGET_DIR/subs_${index}_${lang:-und}.vtt"
-                    # --- FFMPEG FIX: -nostdin added here ---
                     if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
                       if [ -s "$VTT_FILE" ]; then
                         HAS_SUBS="true"
@@ -237,7 +235,6 @@ jobs:
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt)$ ]]; then
                     TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
                     
-                    # --- FFMPEG FIX: -nostdin added here ---
                     if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1; then
                       if [ -s "$TEMP_VTT" ]; then
                         IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")
@@ -269,7 +266,7 @@ jobs:
             HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
 
-            # 3. GENERATE RICH METADATA
+            # 3. GENERATE RICH METADATA (WITH STRICT TYPES/LANGS/SOURCES)
             python -c "
           import os, json, requests, subprocess, sys
           from guessit import guessit
@@ -277,11 +274,38 @@ jobs:
           file_path = sys.argv[1]
           target_dir = sys.argv[2]
           filename = os.path.basename(file_path)
+          fn_lower = filename.lower()
 
           g = guessit(filename)
           title = g.get('title', 'Unknown Title')
           year = g.get('year', '')
           quality = g.get('screen_size', 'Unknown Quality')
+
+          # --- STRICT TYPE LOGIC ---
+          vid_type = 'movie'
+          if g.get('type') == 'episode':
+              vid_type = 'anime' if g.get('anime') else 'series'
+
+          # --- STRICT LANGUAGE LOGIC ---
+          raw_langs = g.get('language', [])
+          if not isinstance(raw_langs, list): raw_langs = [raw_langs]
+          raw_langs = [str(l).lower() for l in raw_langs]
+          
+          vid_lang = 'english'
+          if 'hindi' in raw_langs or '.hin.' in fn_lower or 'hin-tam' in fn_lower or 'dual-audio' in fn_lower: 
+              vid_lang = 'hindi'
+          elif 'telugu' in raw_langs or '.tel.' in fn_lower or 'tam-tel' in fn_lower: 
+              vid_lang = 'telugu'
+          elif 'japanese' in raw_langs or '.jap.' in fn_lower or 'jpn' in fn_lower: 
+              vid_lang = 'japanese'
+
+          # --- STRICT SOURCE LOGIC ---
+          fmt = str(g.get('format', '')).lower()
+          base_src = 'BluRay' if 'bluray' in fmt or 'brrip' in fmt or 'bdrip' in fn_lower else 'WEB-DL'
+          
+          other_tags = str(g.get('other', '')).lower() + str(g.get('edition', '')).lower()
+          is_imax = 'imax' in other_tags or 'imax' in fn_lower
+          vid_source = f'IMAX {base_src}' if is_imax else base_src
 
           size_bytes = os.path.getsize(file_path)
           size_str = f'{round(size_bytes / (1024**3), 2)} GB'
@@ -302,9 +326,21 @@ jobs:
           hf_base_url = f'https://huggingface.co/datasets/{hf_repo}/resolve/main/{safe_target_dir}/'
 
           metadata = {
-              'id': 0, 'original_filename': filename, 'title': title, 'year': str(year) if year else '',
-              'quality': quality, 'duration': duration_formatted, 'size': size_str, 'rating': 0.0,
-              'poster_url': '', 'backdrop_url': '', 'hls_manifest_url': f'{hf_base_url}master.m3u8', 'overview': ''
+              'id': 0, 
+              'original_filename': filename, 
+              'title': title, 
+              'year': str(year) if year else '',
+              'type': vid_type,
+              'language': vid_lang,
+              'source': vid_source,
+              'quality': quality, 
+              'duration': duration_formatted, 
+              'size': size_str, 
+              'rating': 0.0,
+              'poster_url': '', 
+              'backdrop_url': '', 
+              'hls_manifest_url': f'{hf_base_url}master.m3u8', 
+              'overview': ''
           }
 
           tmdb_key = os.environ.get('TMDB_API_KEY')
@@ -328,7 +364,7 @@ jobs:
               json.dump(metadata, f, indent=4)
           " "$VIDEO_FILE" "$TARGET_DIR"
 
-          done
+          done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
           
           if [ ! -d "hls_output" ] || [ -z "$(ls -A hls_output)" ]; then
             echo "❌ CRITICAL ERROR: hls_output is empty. Processing failed."

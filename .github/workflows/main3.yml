@@ -50,7 +50,7 @@ jobs:
           mkdir -p workspace
           echo "Evaluating Payload Type..."
           
-          if [[ "$TARGET_LINK" == *drive.google.com* ]]; then
+          if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
             echo "🌐 Detected Google Drive Link. Fetching via gdown..."
             if [[ "$TARGET_LINK" == */folders/* ]]; then
               gdown --folder "$TARGET_LINK" -O workspace/

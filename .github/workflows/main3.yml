@@ -326,8 +326,8 @@ jobs:
                           if not show_meta['year']: show_meta['year'] = match.get('first_air_date', '')[:4]
                           show_meta['overview'] = match.get('overview', '')
                           show_meta['rating'] = round(match.get('vote_average', 0.0), 1)
-                          if match.get('poster_path'): show_meta['poster_url'] = f'https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get(\"poster_path\")}'
-                          if match.get('backdrop_path'): show_meta['backdrop_url'] = f'https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get(\"backdrop_path\")}'
+                          if match.get('poster_path'): show_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get('poster_path')}"
+                          if match.get('backdrop_path'): show_meta['backdrop_url'] = f"https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get('backdrop_path')}"
                   except: pass
                   
               with open(show_meta_path, 'w') as f:
@@ -396,8 +396,8 @@ jobs:
                           if not movie_meta['year']: movie_meta['year'] = match.get('release_date', '')[:4]
                           movie_meta['overview'] = match.get('overview', '')
                           movie_meta['rating'] = round(match.get('vote_average', 0.0), 1)
-                          if match.get('poster_path'): movie_meta['poster_url'] = f'https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get(\"poster_path\")}'
-                          if match.get('backdrop_path'): movie_meta['backdrop_url'] = f'https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get(\"backdrop_path\")}'
+                          if match.get('poster_path'): movie_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get('poster_path')}"
+                          if match.get('backdrop_path'): movie_meta['backdrop_url'] = f"https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get('backdrop_path')}"
                   except: pass
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
                   json.dump(movie_meta, f, indent=4)

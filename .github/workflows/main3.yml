@@ -612,7 +612,7 @@ jobs:
             
             if ! ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
-              -avoid_negative_ts make_zero \
+              -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 \
               -max_muxing_queue_size 9999 -f hls -hls_segment_type mpegts \
               -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
@@ -661,6 +661,10 @@ jobs:
                     
                     if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
                       if [ -s "$VTT_FILE" ]; then
+                        
+                        # ⚡ TS SYNC FIX: Inject strict PTS map ⚡
+                        sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$VTT_FILE"
+                        
                         HAS_SUBS="true"
                         DETECTED_SUBS="$DETECTED_SUBS ${lang:-und}"
                         
@@ -733,6 +737,10 @@ jobs:
                         
                         if [[ "$IS_ENGLISH" == "true" ]]; then
                           echo "✅ English auto-detected in track index $index!"
+                          
+                          # ⚡ TS SYNC FIX: Inject strict PTS map ⚡
+                          sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$TEMP_VTT"
+                          
                           VTT_BASENAME="subs_${index}_eng.vtt"
                           M3U8_BASENAME="subs_${index}_eng.m3u8"
                           
@@ -787,7 +795,6 @@ jobs:
           repo = os.environ.get('HF_REPO')
           token = os.environ.get('HF_TOKEN')
           
-          # Initialize API with the token directly
           api = HfApi(token=token)
           
           print('🚀 Initiating batch upload to Hugging Face via upload_large_folder...')
@@ -804,6 +811,7 @@ jobs:
               print(f'❌ Upload failed: {e}')
               exit(1)
           "
+
       - name: Report Success to Discord
         if: env.found == 'true' && success()
         env:

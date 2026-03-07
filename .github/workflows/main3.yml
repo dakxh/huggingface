@@ -372,7 +372,7 @@ jobs:
                           show_meta['overview'] = match.get('overview', '')
                           show_meta['rating'] = round(match.get('vote_average', 0.0), 1)
                           if match.get('poster_path'): show_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get('poster_path')}"
-                          if match.get('backdrop_path'): show_meta['backdrop_url'] = f"https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get('backdrop_path')}"
+                          if match.get('backdrop_path'): show_meta['backdrop_url'] = f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{match.get('backdrop_path')}"
                   except: pass
                   
               episode_name = f'Episode {episode_num}'
@@ -470,7 +470,7 @@ jobs:
                           movie_meta['overview'] = match.get('overview', '')
                           movie_meta['rating'] = round(match.get('vote_average', 0.0), 1)
                           if match.get('poster_path'): movie_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get('poster_path')}"
-                          if match.get('backdrop_path'): movie_meta['backdrop_url'] = f"https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get('backdrop_path')}"
+                          if match.get('backdrop_path'): movie_meta['backdrop_url'] = f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{match.get('backdrop_path')}"
                   except: pass
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
                   json.dump(movie_meta, f, indent=4)

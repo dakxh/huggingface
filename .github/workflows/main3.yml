@@ -565,7 +565,8 @@ jobs:
                   esac
 
                   if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
-                    AUDIO_ENCODING+=" -c:a:$A_IDX libopus -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=7.1|5.1|stereo "
+                    # AUDIO FIX: AAC + Maximum 5.1 Downmix
+                    AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo "
                     DISPLAY_BITRATE="512kbps"
                   else
                     AUDIO_ENCODING+=" -c:a:$A_IDX copy "
@@ -594,7 +595,8 @@ jobs:
               DETECTED_AUDIO="und"
               CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
               if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
-                AUDIO_ENCODING=" -c:a:0 libopus -b:a:0 512k -filter:a:0 aformat=channel_layouts=7.1|5.1|stereo "
+                # AUDIO FIX: AAC + Maximum 5.1 Downmix
+                AUDIO_ENCODING=" -c:a:0 aac -b:a:0 512k -filter:a:0 aformat=channel_layouts=5.1|stereo "
                 DISPLAY_BITRATE="512kbps"
               else
                 AUDIO_ENCODING=" -c:a:0 copy "
@@ -610,8 +612,10 @@ jobs:
             fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             
+            # AUDIO FIX: Enforcing strict PTS timeline synchronization
             if ! ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
+              -avoid_negative_ts make_zero \
               -max_muxing_queue_size 9999 -f hls -hls_segment_type fmp4 -hls_flags single_file \
               -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v.m4s" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \

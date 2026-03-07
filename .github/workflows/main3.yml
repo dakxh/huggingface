@@ -788,20 +788,16 @@ jobs:
           repo = os.environ.get('HF_REPO')
           token = os.environ.get('HF_TOKEN')
           
-          api = HfApi()
+          # Initialize API with the token directly
+          api = HfApi(token=token)
           
-          print('🚀 Initiating batch upload to Hugging Face...')
+          print('🚀 Initiating batch upload to Hugging Face via upload_large_folder...')
           
           try:
-              api.upload_folder(
+              api.upload_large_folder(
                   folder_path='hls_output',
-                  path_in_repo='',
                   repo_id=repo,
                   repo_type='dataset',
-                  token=token,
-                  commit_message='Auto-upload: HLS chunks and metadata',
-                  multi_commits=True,
-                  multi_commits_chunk_size=500,
                   ignore_patterns=['*.torrent', '*.zip', 'temp_*']
               )
               print('✅ Upload completed successfully.')
@@ -809,7 +805,6 @@ jobs:
               print(f'❌ Upload failed: {e}')
               exit(1)
           "
-
       - name: Report Success to Discord
         if: env.found == 'true' && success()
         env:

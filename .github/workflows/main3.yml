@@ -177,6 +177,9 @@ jobs:
           
           year = str(g.get('year', ''))
           quality = str(g.get('screen_size', ''))
+          if not quality:
+              quality = '1080p'
+              
           s = g.get('season')
           e = g.get('episode')
           
@@ -240,6 +243,8 @@ jobs:
           title = g.get('title', 'Unknown Title')
           year = str(g.get('year', ''))
           quality = str(g.get('screen_size', ''))
+          if not quality:
+              quality = '1080p'
 
           fmt = str(g.get('format', '')).lower()
           source = 'BluRay' if 'bluray' in fmt or 'brrip' in fmt or 'bdrip' in filename.lower() else 'WEB-DL'
@@ -402,13 +407,9 @@ jobs:
               # --- CLEAN UP & APPEND SERIES TO GLOBAL CATALOG ---
               series_metadata_url = f"https://huggingface.co/datasets/{hf_repo}/resolve/main/{urllib.parse.quote(base_dir)}/metadata.json"
               
-              # 1. PURGE all old 'episode' entries from the catalog (fixes previous bugs)
               catalog = [item for item in catalog if item.get('type') != 'episode']
-              
-              # 2. PURGE the existing 'series' entry for this show to prevent duplicates
               catalog = [item for item in catalog if not (item.get('type') == 'series' and item.get('title') == show_meta['title'])]
               
-              # STRICT SERIES CATALOG ENTRY (No fluff)
               catalog_entry = {
                   'id': show_meta['id'],
                   'type': 'series',
@@ -452,7 +453,6 @@ jobs:
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
                   json.dump(movie_meta, f, indent=4)
                   
-              # STRICT MOVIE CATALOG ENTRY (No fluff)
               catalog_entry = {
                   'id': movie_meta['id'],
                   'type': 'movie',

@@ -165,10 +165,11 @@ jobs:
         if: env.found == 'true'
         run: |
           cat << 'EOF' > routing.py
-          import sys, re
+          import os, sys, re
           from guessit import guessit
           
-          filename = sys.argv[1]
+          file_path = sys.argv[1]
+          filename = os.path.basename(file_path)
           g = guessit(filename)
           
           vid_type = g.get('type')
@@ -179,6 +180,15 @@ jobs:
           s = g.get('season')
           e = g.get('episode')
           
+          if not s:
+              s_match = re.search(r'[Ss](\d{1,2})[Ee]\d', filename)
+              if s_match:
+                  s = int(s_match.group(1))
+              else:
+                  s_path_match = re.search(r'[Ss]eason\s?0*(\d{1,2})', file_path, re.IGNORECASE)
+                  if s_path_match:
+                      s = int(s_path_match.group(1))
+
           if not e:
               anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', filename)
               if anime_match:
@@ -282,6 +292,16 @@ jobs:
           if sub_dir:
               s_val = g.get('season')
               e_val = g.get('episode')
+              
+              if not s_val:
+                  s_match = re.search(r'[Ss](\d{1,2})[Ee]\d', filename)
+                  if s_match:
+                      s_val = int(s_match.group(1))
+                  else:
+                      s_path_match = re.search(r'[Ss]eason\s?0*(\d{1,2})', file_path, re.IGNORECASE)
+                      if s_path_match:
+                          s_val = int(s_path_match.group(1))
+
               if not e_val:
                   anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', filename)
                   if anime_match:
@@ -449,10 +469,9 @@ jobs:
           while read -u 9 VIDEO_FILE; do
             echo "================================================================"
             echo "🎬 PROCESSING FILE: $VIDEO_FILE"
-            BASENAME=$(basename "$VIDEO_FILE")
             
-            # 1. DYNAMIC ROUTING & HIERARCHY SPLIT
-            ROUTING=$(python routing.py "$BASENAME")
+            # 1. DYNAMIC ROUTING & HIERARCHY SPLIT (Passing full VIDEO_FILE now for better directory parsing)
+            ROUTING=$(python routing.py "$VIDEO_FILE")
             
             BASE_DIR=$(echo "$ROUTING" | cut -d'|' -f1)
             SUB_DIR=$(echo "$ROUTING" | cut -d'|' -f2)
@@ -528,11 +547,9 @@ jobs:
                   fi
                   
                   AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
-                  # Native mapping only, no `name:` param here so files stay as stream_1.m3u8
                   VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
                   DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
                   
-                  # Targeted replacement based on ffmpeg's exact numbering
                   AUDIO_SED_CMDS+="s/NAME=\"audio_${STREAM_IDX}\"/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
                   
                   A_IDX=$((A_IDX + 1))
@@ -568,7 +585,7 @@ jobs:
               -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v.m4s" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
               "hls_output/$TARGET_DIR/stream_%v.m3u8"; then
-              echo "❌ FFMPEG CRASHED ON $BASENAME! Skipping to next file..."
+              echo "❌ FFMPEG CRASHED! Skipping to next file..."
               continue
             fi
             

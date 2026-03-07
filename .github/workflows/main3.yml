@@ -613,8 +613,9 @@ jobs:
             if ! ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero \
-              -max_muxing_queue_size 9999 -f hls -hls_segment_type fmp4 -hls_flags single_file \
-              -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v.m4s" \
+              -max_muxing_queue_size 9999 -f hls -hls_segment_type fmp4 \
+              -hls_fmp4_init_filename "stream_%v_init.mp4" \
+              -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.m4s" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
               "hls_output/$TARGET_DIR/stream_%v.m3u8"; then
               echo "❌ FFMPEG CRASHED! Skipping to next file..."
@@ -627,8 +628,6 @@ jobs:
             fi
             
             # ⚡ THE HEVC CHROME BYPASS ⚡
-            # This strips the strict CODECS attribute out of the manifest so HLS.js
-            # skips the buggy isTypeSupported check and forces it directly to the GPU!
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8"
             
             if ! grep -q "stream_0.m3u8" "hls_output/$TARGET_DIR/master.m3u8"; then
@@ -641,7 +640,6 @@ jobs:
               BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
               RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
               [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
-              # Removed CODECS here as well for the fallback
               printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" >> "hls_output/$TARGET_DIR/master.m3u8"
             fi
               
@@ -786,14 +784,30 @@ jobs:
           python -c "
           from huggingface_hub import HfApi
           import os
+          
+          repo = os.environ.get('HF_REPO')
+          token = os.environ.get('HF_TOKEN')
+          
           api = HfApi()
-          api.upload_folder(
-              folder_path='hls_output',
-              path_in_repo='',
-              repo_id=os.environ.get('HF_REPO'),
-              repo_type='dataset',
-              token=os.environ.get('HF_TOKEN')
-          )
+          
+          print('🚀 Initiating batch upload to Hugging Face...')
+          
+          try:
+              api.upload_folder(
+                  folder_path='hls_output',
+                  path_in_repo='',
+                  repo_id=repo,
+                  repo_type='dataset',
+                  token=token,
+                  commit_message='Auto-upload: HLS chunks and metadata',
+                  multi_commits=True,
+                  multi_commits_chunk_size=500,
+                  ignore_patterns=['*.torrent', '*.zip', 'temp_*']
+              )
+              print('✅ Upload completed successfully.')
+          except Exception as e:
+              print(f'❌ Upload failed: {e}')
+              exit(1)
           "
 
       - name: Report Success to Discord
@@ -803,10 +817,10 @@ jobs:
           QUEUE_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          TOTAL_FILES=$(find hls_output -name "metadata.json" | wc -l)
+          TOTAL_FILES=$(find hls_output -type f | wc -l)
           TOTAL_SIZE=$(du -sh hls_output | cut -f1)
           
-          STATUS_MSG="✅ **Batch Upload Complete!** \n🎬 Processed: \`${TOTAL_FILES} video(s)\`\n📦 Total Size: \`${TOTAL_SIZE}\`\n🌐 CDN Ready on HuggingFace."
+          STATUS_MSG="✅ **Batch Upload Complete!** \n🎬 Generated: \`${TOTAL_FILES} chunks/files\`\n📦 Total Size: \`${TOTAL_SIZE}\`\n🌐 CDN Ready on HuggingFace."
           
           ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CHANNEL_ID" delete "$MSG_ID"
           ./discord_manager "$DISCORD_TOKEN" "$PING_CHANNEL_ID" send "$STATUS_MSG"

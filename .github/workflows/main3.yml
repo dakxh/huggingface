@@ -220,6 +220,7 @@ jobs:
           cat << 'EOF' > metadata_builder.py
           import os, json, requests, subprocess, sys, re, time
           from guessit import guessit
+          import urllib.parse
           
           file_path = sys.argv[1]
           base_dir = sys.argv[2]
@@ -274,7 +275,6 @@ jobs:
           size_str = f'{round(size_bytes / (1024**3), 2)} GB'
 
           hf_repo = os.environ.get('HF_REPO', '')
-          import urllib.parse
           safe_target_dir = urllib.parse.quote(target_dir)
           manifest_url = f'https://huggingface.co/datasets/{hf_repo}/resolve/main/{safe_target_dir}/master.m3u8'
 
@@ -287,8 +287,6 @@ jobs:
           except:
               catalog = []
               
-          catalog = [item for item in catalog if item.get('hls_manifest_url') != manifest_url]
-          
           if sub_dir:
               s_val = g.get('season')
               e_val = g.get('episode')
@@ -315,7 +313,7 @@ jobs:
                   'id': 0, 'type': 'series', 'title': title, 'year': year, 'rating': 0.0,
                   'source': source, 'quality': quality, 'duration': '0m', 'IMAX': is_imax, 'HDR': is_hdr,
                   'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': date_added,
-                  '_total_secs': 0.0, '_ep_count': 0
+                  '_total_secs': 0.0, '_ep_count': 0, 'episodes': []
               }
               
               if os.path.exists(show_meta_path):
@@ -350,9 +348,6 @@ jobs:
                           if match.get('backdrop_path'): show_meta['backdrop_url'] = f"https://image.tmdb.org/t/p/w1920_and_h800_multi_faces{match.get('backdrop_path')}"
                   except: pass
                   
-              with open(show_meta_path, 'w') as f:
-                  json.dump(show_meta, f, indent=4)
-                  
               episode_name = f'Episode {episode_num}'
               if tmdb_key and show_meta['id'] != 0:
                   try:
@@ -362,6 +357,30 @@ jobs:
                           episode_name = ep_res['name']
                   except: pass
                   
+              # --- ADD EPISODE TO SHOW ARRAY ---
+              if 'episodes' not in show_meta:
+                  show_meta['episodes'] = []
+              
+              ep_entry = {
+                  'season_number': season_num,
+                  'episode_number': episode_num,
+                  'episode_name': episode_name,
+                  'quality': quality,
+                  'date_added': date_added,
+                  'hls_manifest_url': manifest_url
+              }
+              
+              # Remove old version of this exact episode to avoid duplicates, then append
+              show_meta['episodes'] = [ep for ep in show_meta['episodes'] if not (ep['season_number'] == season_num and ep['episode_number'] == episode_num)]
+              show_meta['episodes'].append(ep_entry)
+              
+              # Sort the array chronologically by season and episode
+              show_meta['episodes'] = sorted(show_meta['episodes'], key=lambda x: (x['season_number'], x['episode_number']))
+              
+              with open(show_meta_path, 'w') as f:
+                  json.dump(show_meta, f, indent=4)
+                  
+              # --- LEAN EPISODE JSON ---
               ep_meta = {
                   'id': show_meta['id'],
                   'series_title': title,
@@ -380,21 +399,32 @@ jobs:
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
                   json.dump(ep_meta, f, indent=4)
                   
+              # --- CLEAN UP & APPEND SERIES TO GLOBAL CATALOG ---
+              series_metadata_url = f"https://huggingface.co/datasets/{hf_repo}/resolve/main/{urllib.parse.quote(base_dir)}/metadata.json"
+              
+              # 1. PURGE all old 'episode' entries from the catalog (fixes previous bugs)
+              catalog = [item for item in catalog if item.get('type') != 'episode']
+              
+              # 2. PURGE the existing 'series' entry for this show to prevent duplicates
+              catalog = [item for item in catalog if not (item.get('type') == 'series' and item.get('title') == show_meta['title'])]
+              
+              # STRICT SERIES CATALOG ENTRY (No fluff)
               catalog_entry = {
                   'id': show_meta['id'],
-                  'type': 'episode',
-                  'series_title': title,
-                  'title': episode_name,
-                  'season_number': season_num,
-                  'episode_number': episode_num,
+                  'type': 'series',
+                  'title': show_meta['title'],
+                  'year': show_meta['year'],
                   'quality': quality,
                   'date_added': date_added,
-                  'hls_manifest_url': manifest_url,
+                  'series_metadata_url': series_metadata_url,
                   'poster_url': show_meta.get('poster_url', '')
               }
               catalog.append(catalog_entry)
                       
           else:
+              # ====== MOVIE ======
+              catalog = [item for item in catalog if item.get('hls_manifest_url') != manifest_url]
+              
               movie_meta = {
                   'id': 0, 'type': 'movie', 'original_filename': filename, 'title': title,
                   'year': year, 'rating': 0.0, 'source': source, 'quality': quality, 
@@ -422,6 +452,7 @@ jobs:
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
                   json.dump(movie_meta, f, indent=4)
                   
+              # STRICT MOVIE CATALOG ENTRY (No fluff)
               catalog_entry = {
                   'id': movie_meta['id'],
                   'type': 'movie',
@@ -470,7 +501,7 @@ jobs:
             echo "================================================================"
             echo "🎬 PROCESSING FILE: $VIDEO_FILE"
             
-            # 1. DYNAMIC ROUTING & HIERARCHY SPLIT (Passing full VIDEO_FILE now for better directory parsing)
+            # 1. DYNAMIC ROUTING & HIERARCHY SPLIT
             ROUTING=$(python routing.py "$VIDEO_FILE")
             
             BASE_DIR=$(echo "$ROUTING" | cut -d'|' -f1)

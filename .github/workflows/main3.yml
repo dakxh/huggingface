@@ -173,7 +173,18 @@ jobs:
           g = guessit(filename)
           
           vid_type = g.get('type')
-          title = str(g.get('title', 'Unknown_Series')).title().replace(' ', '.')
+          title = str(g.get('title', '')).strip()
+          
+          # --- SMART TITLE FALLBACK ---
+          year_match = re.search(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', filename)
+          if year_match:
+              raw_prefix = filename[:year_match.start()]
+              regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
+              if len(regex_title) > len(title):
+                  title = regex_title
+                  
+          if not title: title = 'Unknown_Series'
+          title = title.title().replace(' ', '.')
           
           year = str(g.get('year', ''))
           quality = str(g.get('screen_size', ''))
@@ -240,7 +251,18 @@ jobs:
           target_dir = os.path.join(base_dir, sub_dir) if sub_dir else base_dir
           g = guessit(filename)
           
-          title = g.get('title', 'Unknown Title')
+          title = str(g.get('title', '')).strip()
+          
+          # --- SMART TITLE FALLBACK ---
+          year_match = re.search(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', filename)
+          if year_match:
+              raw_prefix = filename[:year_match.start()]
+              regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
+              if len(regex_title) > len(title):
+                  title = regex_title
+                  
+          if not title: title = 'Unknown Title'
+          
           year = str(g.get('year', ''))
           quality = str(g.get('screen_size', ''))
           if not quality:

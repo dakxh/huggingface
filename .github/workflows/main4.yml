@@ -187,36 +187,52 @@ jobs:
           mkdir -p hls_output
           while read -u 9 VIDEO_FILE; do
             echo "🎬 PROCESSING ANIME: $VIDEO_FILE"
-            ROUTING=$(python3 routing.py "$VIDEO_FILE")
+            
+            # Use '|| echo ...' so python crashes don't kill the runner
+            ROUTING=$(python3 routing.py "$VIDEO_FILE" || echo "Unknown.Anime.1080p|Season.01/Episode.01")
             BASE_DIR=$(echo "$ROUTING" | cut -d'|' -f1)
             SUB_DIR=$(echo "$ROUTING" | cut -d'|' -f2)
             TARGET_DIR="$BASE_DIR/$SUB_DIR"
             mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
 
             FONTS_STR=""
-            # THE FIX: Add '|| true' to prevent GitHub Actions pipefail from crashing when grep finds 0 fonts
-            HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$VIDEO_FILE" | grep -i "attachment" | wc -l || true)
+            
+            # FIX 1: Safely count attachments, guaranteeing an integer using grep -c and || echo "0"
+            HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | grep -c -i "attachment" || echo "0")
+            
             if [ "$HAS_ATTACHMENTS" -gt 0 ]; then
               mkdir -p temp_fonts && cd temp_fonts || exit
-              ffmpeg -nostdin -y -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1
+              # FIX 2: Safely run ffmpeg dump_attachment without crashing on expected warnings
+              ffmpeg -nostdin -y -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1 || true
               cd ..
-              if [ "$(ls -A temp_fonts 2>/dev/null)" ]; then
+              
+              if [ "$(ls -A temp_fonts 2>/dev/null || true)" ]; then
                 mkdir -p "hls_output/$TARGET_DIR/fonts"
-                mv temp_fonts/* "hls_output/$TARGET_DIR/fonts/" 2>/dev/null
-                for font in "hls_output/$TARGET_DIR/fonts"/*; do FONTS_STR+="$(basename "$font")|"; done
+                mv temp_fonts/* "hls_output/$TARGET_DIR/fonts/" 2>/dev/null || true
+                for font in "hls_output/$TARGET_DIR/fonts"/*; do
+                  if [ -f "$font" ]; then FONTS_STR+="$(basename "$font")|"; fi
+                done
               fi
               rm -rf temp_fonts
             fi
 
-            STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
+            # FIX 3: Safely probe language streams
+            STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
             DETECTED_ASS=""; DETECTED_AUDIO=""; AUDIO_MAPS="-map 0:V:0"; VAR_STREAM_MAP="v:0,agroup:audio "; AUDIO_ENCODING=""; A_IDX=0
 
             while IFS=',' read -r index ctype lang; do
+              if [[ -z "$index" ]]; then continue; fi
               if [[ "$ctype" == "subtitle" ]]; then
-                if [[ "$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE")" =~ ^(ass|ssa)$ ]]; then
+                # FIX 4: Safely evaluate subtitle codec
+                SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null || true)
+                if [[ "$SUB_CODEC" =~ ^(ass|ssa)$ ]]; then
                   ASS_BASENAME="subs_${index}_${lang:-und}.ass"
-                  ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1
-                  DETECTED_ASS+=" ${ASS_BASENAME}"
+                  # FIX 5: Prevent extraction crash 
+                  ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
+                  
+                  if [ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
+                    DETECTED_ASS+=" ${ASS_BASENAME}"
+                  fi
                 fi
               elif [[ "$ctype" == "audio" ]]; then
                 AUDIO_ENCODING+=" -c:a:$A_IDX copy "
@@ -230,7 +246,9 @@ jobs:
             if [[ "$A_IDX" -eq 0 ]]; then AUDIO_MAPS+=" -map 0:a:0"; DETECTED_AUDIO="und"; AUDIO_ENCODING=" -c:a:0 copy "; VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "; fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
 
-            [[ "$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')" == "hevc" ]] && V_TAG="-tag:v hvc1" || V_TAG="-tag:v avc1"
+            # FIX 6: Safely probe video codec
+            VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+            [[ "$VIDEO_CODEC" == "hevc" ]] && V_TAG="-tag:v hvc1" || V_TAG="-tag:v avc1"
 
             ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 -max_muxing_queue_size 9999 \
@@ -238,11 +256,11 @@ jobs:
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
               "hls_output/$TARGET_DIR/stream_%v.m3u8" || continue
 
-            sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8"
+            sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
             HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/datasets/${HF_ANIME_REPO}/resolve/main/${TARGET_DIR}/', safe=':/'))")
-            find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
+            find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true
 
-            python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR"
+            python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR" || true
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
 
       - name: Upload to Hugging Face

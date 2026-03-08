@@ -391,9 +391,12 @@ jobs:
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
             
             # ⚡ THE HEVC CHROME BYPASS & VIDEO/AUDIO INJECTION FAIL-SAFE ⚡
+            # ⚡ THE HEVC CHROME BYPASS & VIDEO/AUDIO INJECTION FAIL-SAFE ⚡
             for m3u8_file in "hls_output/$TARGET_DIR"/stream_*.m3u8; do
               stream_name=$(basename "$m3u8_file")
-              if ! grep -q "$stream_name" "hls_output/$TARGET_DIR/master.m3u8"; then
+              
+              # ⚡ THE FIX: Added '^' so it strictly checks for variant lines and ignores #EXT-X-MEDIA tags!
+              if ! grep -q "^$stream_name" "hls_output/$TARGET_DIR/master.m3u8"; then
                 echo "⚠️ FFmpeg omitted $stream_name from master playlist! Injecting manually..."
                 
                 if [[ "$stream_name" == "stream_0.m3u8" ]]; then
@@ -409,6 +412,7 @@ jobs:
                   
                   printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$RESOLUTION" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 else
+                  # Dynamically rescue any dropped audio streams
                   printf '\n#EXT-X-STREAM-INF:BANDWIDTH=128000,AUDIO="group_audio"\n%s\n' "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 fi
               fi

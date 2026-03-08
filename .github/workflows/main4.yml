@@ -25,7 +25,7 @@ jobs:
         id: discord_fetch
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          CHANNEL_ID: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
         run: |
           g++ discord_manager.cpp -o discord_manager -lcurl
           
@@ -125,7 +125,7 @@ jobs:
           ass_files = [x.strip() for x in ass_str.split() if x.strip()]
           fonts = [x.strip() for x in fonts_str.split('|') if x.strip()]
           target_dir = os.path.join(base_dir, sub_dir)
-          hf_repo, tmdb_key = os.environ.get('HF_REPO', ''), os.environ.get('TMDB_API_KEY')
+          HF_ANIME_REPO, tmdb_key = os.environ.get('HF_ANIME_REPO', ''), os.environ.get('TMDB_API_KEY')
           
           clean_name = re.sub(r'^\[.*?\]\s*', '', os.path.basename(file_path))
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\]', '', clean_name)
@@ -146,8 +146,8 @@ jobs:
               if am: e_val = int(am.group(1))
           s_num, e_num = int(s_val[0] if isinstance(s_val, list) else s_val), int(e_val[0] if isinstance(e_val, list) else e_val)
 
-          manifest_url = f'https://huggingface.co/datasets/{hf_repo}/resolve/main/{urllib.parse.quote(target_dir)}/master.m3u8'
-          base_url = f'https://huggingface.co/datasets/{hf_repo}/resolve/main/{urllib.parse.quote(target_dir)}'
+          manifest_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}/master.m3u8'
+          base_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}'
           
           show_meta = {'id': 0, 'type': 'anime', 'title': title, 'year': '', 'rating': 0.0, 'source': 'WEB-DL', 'quality': str(g.get('screen_size', '1080p')), 'duration': '0m', 'IMAX': False, 'HDR': False, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes': []}
           if os.path.exists(f'hls_output/{base_dir}/metadata.json'):
@@ -182,7 +182,7 @@ jobs:
         if: env.found == 'true'
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          HF_REPO: ${{ secrets.HF_REPO }}
+          HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
         run: |
           mkdir -p hls_output
           while read -u 9 VIDEO_FILE; do
@@ -237,7 +237,7 @@ jobs:
               "hls_output/$TARGET_DIR/stream_%v.m3u8" || continue
 
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8"
-            HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/datasets/${HF_REPO}/resolve/main/${TARGET_DIR}/', safe=':/'))")
+            HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/datasets/${HF_ANIME_REPO}/resolve/main/${TARGET_DIR}/', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
 
             python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR"
@@ -247,20 +247,20 @@ jobs:
         if: env.found == 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_REPO: ${{ secrets.HF_REPO }}
+          HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
         run: |
           python -c "
           from huggingface_hub import HfApi
           import os
           api = HfApi(token=os.environ.get('HF_TOKEN'))
-          api.upload_large_folder(folder_path='hls_output', repo_id=os.environ.get('HF_REPO'), repo_type='dataset', ignore_patterns=['*.torrent', '*.zip', 'temp_*'])
+          api.upload_large_folder(folder_path='hls_output', repo_id=os.environ.get('HF_ANIME_REPO'), repo_type='dataset', ignore_patterns=['*.torrent', '*.zip', 'temp_*'])
           "
 
       - name: Report to Discord
         if: always() && env.found == 'true'
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          QUEUE_CH: ${{ secrets.DISCORD_CHANNEL_ID }}
+          QUEUE_CH: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
           PING_CH: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
           if [ "${{ job.status }}" == "success" ]; then

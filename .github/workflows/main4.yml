@@ -329,6 +329,7 @@ jobs:
                   *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                 esac
 
+                # ⚡ Transcode FLAC, ALAC, WAV, and unplayable Surround codecs safely
                 if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*)$ ]]; then
                   AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo "
                   DISPLAY_BITRATE="512kbps"
@@ -388,6 +389,24 @@ jobs:
             fi
             
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
+            
+            # ⚡ THE HEVC CHROME BYPASS & VIDEO INJECTION FAIL-SAFE ⚡
+            if ! grep -q "stream_0.m3u8" "hls_output/$TARGET_DIR/master.m3u8"; then
+              echo "⚠️ FFmpeg omitted HEVC video from master playlist! Injecting manually..."
+              
+              BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+              if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
+                SIZE=$(stat -c %s "$VIDEO_FILE")
+                DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
+              fi
+              BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
+              RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
+              [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
+              
+              printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" >> "hls_output/$TARGET_DIR/master.m3u8"
+            fi
+
             HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/datasets/${HF_ANIME_REPO}/resolve/main/${TARGET_DIR}/', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true
 

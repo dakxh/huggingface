@@ -194,7 +194,9 @@ jobs:
             mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
 
             FONTS_STR=""
-            if [ $(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$VIDEO_FILE" | grep -i "attachment" | wc -l) -gt 0 ]; then
+            # THE FIX: Add '|| true' to prevent GitHub Actions pipefail from crashing when grep finds 0 fonts
+            HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$VIDEO_FILE" | grep -i "attachment" | wc -l || true)
+            if [ "$HAS_ATTACHMENTS" -gt 0 ]; then
               mkdir -p temp_fonts && cd temp_fonts || exit
               ffmpeg -nostdin -y -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1
               cd ..

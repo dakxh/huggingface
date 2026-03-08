@@ -316,4 +316,135 @@ jobs:
                   ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
                   
                   if [ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
-                    DETECTED_ASS+=" ${ASS_BAS
+                    DETECTED_ASS+=" ${ASS_BASENAME}"
+                  fi
+                fi
+                
+              elif [[ "$ctype" == "audio" ]]; then
+                A_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+                
+                case "${lang,,}" in
+                  en|eng|english) DISPLAY_LANG="English" ;;
+                  hi|hin|hindi) DISPLAY_LANG="Hindi" ;;
+                  te|tel|telugu) DISPLAY_LANG="Telugu" ;;
+                  ja|jap|jpn|japan|japanese) DISPLAY_LANG="Japanese" ;;
+                  *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
+                esac
+
+                # ⚡ Transcode FLAC, OPUS, and unplayable Surround codecs safely
+                if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo "
+                  DISPLAY_BITRATE="512kbps"
+                else
+                  AUDIO_ENCODING+=" -c:a:$A_IDX copy "
+                  ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
+                  if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                    DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
+                  else
+                    DISPLAY_BITRATE="Original"
+                  fi
+                fi
+                
+                AUDIO_MAPS+=" -map 0:$index"
+                VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
+                DETECTED_AUDIO+=" ${lang:-und}"
+                
+                AUDIO_SED_CMDS+="s/NAME=\"audio_${STREAM_IDX}\"/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
+                
+                A_IDX=$((A_IDX + 1))
+                STREAM_IDX=$((STREAM_IDX + 1))
+              fi
+            done <<< "$STREAMS"
+
+            # Fallback if no specific audio streams were properly parsed in the loop
+            if [[ "$A_IDX" -eq 0 ]]; then 
+              AUDIO_MAPS+=" -map 0:a:0"
+              DETECTED_AUDIO="und"
+              
+              A_CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+              if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
+                AUDIO_ENCODING=" -c:a:0 aac -b:a:0 512k -filter:a:0 aformat=channel_layouts=5.1|stereo "
+                DISPLAY_BITRATE="512kbps"
+              else
+                AUDIO_ENCODING=" -c:a:0 copy "
+                DISPLAY_BITRATE="Original"
+              fi
+              
+              VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
+              AUDIO_SED_CMDS+="s/NAME=\"audio_1\"/NAME=\"Unknown - ${DISPLAY_BITRATE}\"/g; "
+            fi
+            VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
+
+            VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+            [[ "$VIDEO_CODEC" == "hevc" ]] && V_TAG="-tag:v hvc1" || V_TAG="-tag:v avc1"
+
+            ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
+              -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 -max_muxing_queue_size 9999 \
+              -f hls -hls_segment_type mpegts -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
+              -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
+              "hls_output/$TARGET_DIR/stream_%v.m3u8" || continue
+
+            if [ -n "$AUDIO_SED_CMDS" ]; then
+              sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true
+            fi
+            
+            sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
+            
+            # ⚡ THE HEVC CHROME BYPASS & VIDEO/AUDIO INJECTION FAIL-SAFE ⚡
+            for m3u8_file in "hls_output/$TARGET_DIR"/stream_*.m3u8; do
+              stream_name=$(basename "$m3u8_file")
+              if ! grep -q "$stream_name" "hls_output/$TARGET_DIR/master.m3u8"; then
+                echo "⚠️ FFmpeg omitted $stream_name from master playlist! Injecting manually..."
+                
+                if [[ "$stream_name" == "stream_0.m3u8" ]]; then
+                  BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                  if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
+                    SIZE=$(stat -c %s "$VIDEO_FILE")
+                    DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                    BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
+                  fi
+                  BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
+                  RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
+                  [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
+                  
+                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$RESOLUTION" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
+                else
+                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=128000,AUDIO="group_audio"\n%s\n' "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
+                fi
+              fi
+            done
+
+            HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/datasets/${HF_ANIME_REPO}/resolve/main/${TARGET_DIR}/', safe=':/'))")
+            find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true
+
+            python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR" || true
+          done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
+
+      - name: Upload to Hugging Face
+        if: env.found == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
+        run: |
+          python -c "
+          from huggingface_hub import HfApi
+          import os
+          api = HfApi(token=os.environ.get('HF_TOKEN'))
+          api.upload_large_folder(folder_path='hls_output', repo_id=os.environ.get('HF_ANIME_REPO'), repo_type='dataset', ignore_patterns=['*.torrent', '*.zip', 'temp_*'])
+          "
+
+      - name: Report to Discord
+        if: always() && env.found == 'true'
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          QUEUE_CH: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
+          PING_CH: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            TOTAL_FILES=$(find hls_output -type f | wc -l)
+            ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
+            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Uploaded!** \n\`${TOTAL_FILES} files (.ts, .ass, fonts)\`"
+          else
+            PAYLOAD=$(jq -n --arg c "❌ **Pipeline Failed!** \n🔗 [View Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" '{content: $c}')
+            curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CH/messages"
+          fi

@@ -103,6 +103,15 @@ jobs:
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\](?=\.mkv|\.mp4)', '', clean_name)
           g = guessit(clean_name)
           title = str(g.get('title', '')).strip()
+          
+          # SMART TITLE FALLBACK
+          year_match = re.search(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', clean_name)
+          if year_match:
+              raw_prefix = clean_name[:year_match.start()]
+              regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
+              if len(regex_title) > len(title):
+                  title = regex_title
+
           if not title:
               m = re.match(r'^(.*?)\s*-\s*(\d+(?:\.\d+)?)', clean_name)
               if m: title = m.group(1)
@@ -120,25 +129,49 @@ jobs:
           cat << 'EOF' > metadata_builder.py
           import os, json, requests, subprocess, sys, re, time, urllib.parse
           from guessit import guessit
+          
           file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str = sys.argv[1:7]
           available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
           ass_files = [x.strip() for x in ass_str.split() if x.strip()]
           fonts = [x.strip() for x in fonts_str.split('|') if x.strip()]
           target_dir = os.path.join(base_dir, sub_dir)
-          HF_ANIME_REPO, tmdb_key = os.environ.get('HF_ANIME_REPO', ''), os.environ.get('TMDB_API_KEY')
+          HF_ANIME_REPO = os.environ.get('HF_ANIME_REPO', '')
+          tmdb_key = os.environ.get('TMDB_API_KEY')
           
-          clean_name = re.sub(r'^\[.*?\]\s*', '', os.path.basename(file_path))
+          filename = os.path.basename(file_path)
+          clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\]', '', clean_name)
           g = guessit(clean_name)
+          
           title = str(g.get('title', '')).strip()
+          year_match = re.search(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', clean_name)
+          if year_match:
+              raw_prefix = clean_name[:year_match.start()]
+              regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
+              if len(regex_title) > len(title): title = regex_title
           if not title:
               m = re.match(r'^(.*?)\s*-\s*(\d+(?:\.\d+)?)', clean_name)
               if m: title = m.group(1)
           if not title: title = 'Unknown Anime'
 
-          try: dur_seconds = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path], stdout=subprocess.PIPE, text=True).stdout.strip())
+          try:
+              cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
+              dur_seconds = float(subprocess.run(cmd, stdout=subprocess.PIPE, text=True).stdout.strip())
           except: dur_seconds = 0.0
           def format_dur(secs): h, m = int(secs//3600), int((secs%3600)//60); return f'{h}h{m}m' if h>0 else f'{m}m'
+          
+          is_imax = False
+          if 'imax' in filename.lower(): is_imax = True
+          else:
+              try:
+                  cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file_path]
+                  res = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
+                  w, h = map(float, res.stdout.strip().split('x'))
+                  if (1.40 <= w/h <= 1.45) or (1.85 <= w/h <= 1.95): is_imax = True
+              except: pass
+          
+          is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
+          size_str = f'{round(os.path.getsize(file_path)/(1024**3), 2)} GB'
 
           s_val, e_val = g.get('season', 1), g.get('episode', 1)
           if not g.get('episode'):
@@ -149,7 +182,13 @@ jobs:
           manifest_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}/master.m3u8'
           base_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}'
           
-          show_meta = {'id': 0, 'type': 'anime', 'title': title, 'year': '', 'rating': 0.0, 'source': 'WEB-DL', 'quality': str(g.get('screen_size', '1080p')), 'duration': '0m', 'IMAX': False, 'HDR': False, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes': []}
+          # Initialize or fetch catalog locally
+          catalog_path = 'hls_output/global_catalog.json'
+          try:
+              with open(catalog_path, 'r') as f: catalog = json.load(f)
+          except: catalog = []
+          
+          show_meta = {'id': 0, 'type': 'anime', 'title': title, 'year': '', 'rating': 0.0, 'source': 'WEB-DL', 'quality': str(g.get('screen_size', '1080p')), 'duration': '0m', 'IMAX': is_imax, 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes': []}
           if os.path.exists(f'hls_output/{base_dir}/metadata.json'):
               with open(f'hls_output/{base_dir}/metadata.json', 'r') as f: show_meta.update(json.load(f))
           
@@ -174,8 +213,14 @@ jobs:
           show_meta['episodes'].sort(key=lambda x: (x['season_number'], x['episode_number']))
           with open(f'hls_output/{base_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
 
-          ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': os.path.basename(file_path), 'quality': show_meta['quality'], 'duration': format_dur(dur_seconds), 'size': f'{round(os.path.getsize(file_path)/(1024**3), 2)} GB', 'available_audio': available_audio, 'ass_subtitles': [f'{base_url}/{urllib.parse.quote(a)}' for a in ass_files], 'fonts': [f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts], 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
+          ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': filename, 'quality': show_meta['quality'], 'duration': format_dur(dur_seconds), 'size': size_str, 'available_audio': available_audio, 'ass_subtitles': [f'{base_url}/{urllib.parse.quote(a)}' for a in ass_files], 'fonts': [f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts], 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
           with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
+          
+          # Append to Global Catalog cleanly
+          catalog = [item for item in catalog if item.get('type') != 'episode']
+          catalog = [item for item in catalog if not (item.get('type') == 'anime' and item.get('title') == show_meta['title'])]
+          catalog.append({'id': show_meta['id'], 'type': 'anime', 'title': show_meta['title'], 'year': show_meta['year'], 'quality': show_meta['quality'], 'date_added': int(time.time()), 'series_metadata_url': f"https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(base_dir)}/metadata.json", 'poster_url': show_meta.get('poster_url', '')})
+          with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
           EOF
 
       - name: Process Master Anime Loop
@@ -183,8 +228,26 @@ jobs:
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p hls_output
+          
+          # INITIALIZE OR FETCH GLOBAL CATALOG FROM HF
+          python -c "
+          import os, json, shutil
+          from huggingface_hub import hf_hub_download
+          repo = os.environ.get('HF_ANIME_REPO')
+          token = os.environ.get('HF_TOKEN')
+          catalog_path = 'hls_output/global_catalog.json'
+          try:
+              dl_path = hf_hub_download(repo_id=repo, filename='global_catalog.json', repo_type='dataset', token=token)
+              shutil.copy(dl_path, catalog_path)
+              print('✅ Successfully pulled existing global_catalog.json')
+          except Exception as e:
+              print('⚠️ No existing global_catalog.json found. Initializing a new one.')
+              with open(catalog_path, 'w') as f: f.write('[]')
+          "
+          
           while read -u 9 VIDEO_FILE; do
             echo "🎬 PROCESSING ANIME: $VIDEO_FILE"
             
@@ -193,16 +256,23 @@ jobs:
             BASE_DIR=$(echo "$ROUTING" | cut -d'|' -f1)
             SUB_DIR=$(echo "$ROUTING" | cut -d'|' -f2)
             TARGET_DIR="$BASE_DIR/$SUB_DIR"
+            
+            # THE COLLISION LOCK
+            ORIG_TARGET_DIR="$TARGET_DIR"
+            COUNTER=2
+            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+              echo "⚠️ Collision detected! $TARGET_DIR already exists."
+              TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
+              COUNTER=$((COUNTER+1))
+            done
+            
             mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
 
             FONTS_STR=""
-            
-            # FIX 1: Safely count attachments, guaranteeing an integer using grep -c and || echo "0"
+            # Safely count attachments
             HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | grep -c -i "attachment" || echo "0")
-            
             if [ "$HAS_ATTACHMENTS" -gt 0 ]; then
               mkdir -p temp_fonts && cd temp_fonts || exit
-              # FIX 2: Safely run ffmpeg dump_attachment without crashing on expected warnings
               ffmpeg -nostdin -y -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1 || true
               cd ..
               
@@ -216,37 +286,93 @@ jobs:
               rm -rf temp_fonts
             fi
 
-            # FIX 3: Safely probe language streams
+            # Setup mapping vars
             STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
-            DETECTED_ASS=""; DETECTED_AUDIO=""; AUDIO_MAPS="-map 0:V:0"; VAR_STREAM_MAP="v:0,agroup:audio "; AUDIO_ENCODING=""; A_IDX=0
+            DETECTED_ASS=""; DETECTED_AUDIO=""; AUDIO_MAPS="-map 0:V:0"; VAR_STREAM_MAP="v:0,agroup:audio "; AUDIO_ENCODING=""
+            A_IDX=0
+            STREAM_IDX=1
+            AUDIO_SED_CMDS=""
 
             while IFS=',' read -r index ctype lang; do
               if [[ -z "$index" ]]; then continue; fi
+              
               if [[ "$ctype" == "subtitle" ]]; then
-                # FIX 4: Safely evaluate subtitle codec
                 SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null || true)
                 if [[ "$SUB_CODEC" =~ ^(ass|ssa)$ ]]; then
-                  ASS_BASENAME="subs_${index}_${lang:-und}.ass"
-                  # FIX 5: Prevent extraction crash 
+                  # Clean subtitle naming logic for Decoupled ASS files
+                  case "${lang,,}" in
+                    en|eng|english) SUB_LANG="English" ;;
+                    hi|hin|hindi) SUB_LANG="Hindi" ;;
+                    te|tel|telugu) SUB_LANG="Telugu" ;;
+                    ja|jap|jpn|japan|japanese) SUB_LANG="Japanese" ;;
+                    *) [ -n "$lang" ] && SUB_LANG="$(echo "$lang" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" || SUB_LANG="Unknown" ;;
+                  esac
+                  SAFE_SUB_NAME=$(echo "$SUB_LANG" | tr -cd 'a-zA-Z0-9')
+                  ASS_BASENAME="subs_${index}_${SAFE_SUB_NAME}.ass"
+                  
                   ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
                   
                   if [ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
                     DETECTED_ASS+=" ${ASS_BASENAME}"
                   fi
                 fi
+                
               elif [[ "$ctype" == "audio" ]]; then
-                AUDIO_ENCODING+=" -c:a:$A_IDX copy "
+                # Safe audio codec probing and conditional transcoding
+                A_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+                
+                case "${lang,,}" in
+                  en|eng|english) DISPLAY_LANG="English" ;;
+                  hi|hin|hindi) DISPLAY_LANG="Hindi" ;;
+                  te|tel|telugu) DISPLAY_LANG="Telugu" ;;
+                  ja|jap|jpn|japan|japanese) DISPLAY_LANG="Japanese" ;;
+                  *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
+                esac
+
+                if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo "
+                  DISPLAY_BITRATE="512kbps"
+                else
+                  AUDIO_ENCODING+=" -c:a:$A_IDX copy "
+                  ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
+                  if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                    DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
+                  else
+                    DISPLAY_BITRATE="Original"
+                  fi
+                fi
+                
                 AUDIO_MAPS+=" -map 0:$index"
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
                 DETECTED_AUDIO+=" ${lang:-und}"
+                
+                # Setup mapping replacement command
+                AUDIO_SED_CMDS+="s/NAME=\"audio_${STREAM_IDX}\"/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
+                
                 A_IDX=$((A_IDX + 1))
+                STREAM_IDX=$((STREAM_IDX + 1))
               fi
             done <<< "$STREAMS"
 
-            if [[ "$A_IDX" -eq 0 ]]; then AUDIO_MAPS+=" -map 0:a:0"; DETECTED_AUDIO="und"; AUDIO_ENCODING=" -c:a:0 copy "; VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "; fi
+            # Fallback if no specific audio streams were properly parsed in the loop
+            if [[ "$A_IDX" -eq 0 ]]; then 
+              AUDIO_MAPS+=" -map 0:a:0"
+              DETECTED_AUDIO="und"
+              
+              A_CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+              if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
+                AUDIO_ENCODING=" -c:a:0 aac -b:a:0 512k -filter:a:0 aformat=channel_layouts=5.1|stereo "
+                DISPLAY_BITRATE="512kbps"
+              else
+                AUDIO_ENCODING=" -c:a:0 copy "
+                DISPLAY_BITRATE="Original"
+              fi
+              
+              VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
+              AUDIO_SED_CMDS+="s/NAME=\"audio_1\"/NAME=\"Unknown - ${DISPLAY_BITRATE}\"/g; "
+            fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
 
-            # FIX 6: Safely probe video codec
             VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || true)
             [[ "$VIDEO_CODEC" == "hevc" ]] && V_TAG="-tag:v hvc1" || V_TAG="-tag:v avc1"
 
@@ -256,6 +382,11 @@ jobs:
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
               "hls_output/$TARGET_DIR/stream_%v.m3u8" || continue
 
+            # Apply Audio Sed Replacements directly to the Master M3U8
+            if [ -n "$AUDIO_SED_CMDS" ]; then
+              sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true
+            fi
+            
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
             HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/datasets/${HF_ANIME_REPO}/resolve/main/${TARGET_DIR}/', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true

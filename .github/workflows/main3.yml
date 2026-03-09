@@ -33,7 +33,7 @@ jobs:
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
           
-          if [ -z "$TARGET_LINK" ] ||[ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
+          if[ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] ||[ "$MSG_ID" == "error" ]; then
             echo "❌ API Error or No valid link found."
             echo "found=false" >> $GITHUB_ENV
             exit 0
@@ -123,7 +123,7 @@ jobs:
               if res.get('mimeType') == 'application/vnd.google-apps.folder':
                   print(f"📂 Detected Folder: {res['name']}. Traversing contents...")
                   q_url = f"https://www.googleapis.com/drive/v3/files?q='{fid}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)"
-                  children = requests.get(q_url, headers=headers).json().get('files', [])
+                  children = requests.get(q_url, headers=headers).json().get('files',[])
                   for child in children:
                       if child['mimeType'] == 'application/vnd.google-apps.folder':
                           process_node(child['id'])
@@ -156,7 +156,7 @@ jobs:
           done 9< <(find workspace -type f -name "*.zip")
           
           VIDEO_COUNT=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l)
-          if [ "$VIDEO_COUNT" -eq 0 ]; then
+          if[ "$VIDEO_COUNT" -eq 0 ]; then
              echo "❌ CRITICAL ERROR: Failed to locate any video files after download and extraction. Exiting."
              exit 1
           fi
@@ -416,7 +416,7 @@ jobs:
                   'hls_manifest_url': manifest_url
               }
               
-              show_meta['episodes'] =[ep for ep in show_meta['episodes'] if not (ep['season_number'] == season_num and ep['episode_number'] == episode_num)]
+              show_meta['episodes'] = [ep for ep in show_meta['episodes'] if not (ep['season_number'] == season_num and ep['episode_number'] == episode_num)]
               show_meta['episodes'].append(ep_entry)
               show_meta['episodes'] = sorted(show_meta['episodes'], key=lambda x: (x['season_number'], x['episode_number']))
               
@@ -443,7 +443,7 @@ jobs:
                   
               series_metadata_url = f"https://huggingface.co/datasets/{hf_repo}/resolve/main/{urllib.parse.quote(base_dir)}/metadata.json"
               
-              catalog = [item for item in catalog if item.get('type') != 'episode']
+              catalog =[item for item in catalog if item.get('type') != 'episode']
               catalog =[item for item in catalog if not (item.get('type') == 'series' and item.get('title') == show_meta['title'])]
               
               catalog_entry = {
@@ -502,7 +502,7 @@ jobs:
                       del catalog[existing_idx]['quality']
                   
                   if 'available_resolutions' not in catalog[existing_idx]: catalog[existing_idx]['available_resolutions'] = []
-                  if 'available_variations' not in catalog[existing_idx]: catalog[existing_idx]['available_variations'] = []
+                  if 'available_variations' not in catalog[existing_idx]: catalog[existing_idx]['available_variations'] =[]
                   if 'hls_manifest_url' not in catalog[existing_idx] or not isinstance(catalog[existing_idx]['hls_manifest_url'], dict):
                       catalog[existing_idx]['hls_manifest_url'] = {}
                   
@@ -584,7 +584,7 @@ jobs:
             VARIATION=$(echo "$ROUTING" | awk -F'|' '{print $5}')
             RESOLUTION=$(echo "$ROUTING" | awk -F'|' '{print $6}')
             
-            if [ -n "$SUB_DIR" ]; then
+            if[ -n "$SUB_DIR" ]; then
                 TARGET_DIR="$BASE_DIR/$SUB_DIR"
             else
                 TARGET_DIR="$BASE_DIR"
@@ -593,7 +593,7 @@ jobs:
             # --- BASH COLLISION LOCK ---
             ORIG_TARGET_DIR="$TARGET_DIR"
             COUNTER=2
-            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+            while[ -d "hls_output/$TARGET_DIR" ] &&[ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
               echo "⚠️ Collision detected! $TARGET_DIR already exists."
               TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
               COUNTER=$((COUNTER+1))
@@ -699,7 +699,7 @@ jobs:
             fi
             
             # --- APPLY AUDIO NAMING REPLACEMENTS ---
-            if[ -n "$AUDIO_SED_CMDS" ]; then
+            if [ -n "$AUDIO_SED_CMDS" ]; then
               sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8"
             fi
             
@@ -762,7 +762,7 @@ jobs:
                           CLEAN_TITLE=""
                         fi
 
-                        if [ -n "$CLEAN_TITLE" ]; then
+                        if[ -n "$CLEAN_TITLE" ]; then
                           CLEAN_TITLE_LOWER="${CLEAN_TITLE,,}"
                           SUB_LANG_LOWER="${SUB_LANG,,}"
                           if [[ "$CLEAN_TITLE_LOWER" == "$SUB_LANG_LOWER"* ]]; then
@@ -772,9 +772,7 @@ jobs:
                           fi
                         else
                           FINAL_SUB_NAME="${SUB_LANG}"
-                        fi
-                        
-                        [ -z "$FINAL_SUB_NAME" ] && FINAL_SUB_NAME="Sub_${index}"
+                        fi[ -z "$FINAL_SUB_NAME" ] && FINAL_SUB_NAME="Sub_${index}"
                         
                         printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "$M3U8_FILE"
                         printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="%s",LANGUAGE="%s",URI="%s"\n' "$FINAL_SUB_NAME" "${lang:-und}" "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"
@@ -809,7 +807,7 @@ jobs:
                     TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
                     
                     if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1; then
-                      if [ -s "$TEMP_VTT" ]; then
+                      if[ -s "$TEMP_VTT" ]; then
                         IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")
                         
                         if [[ "$IS_ENGLISH" == "true" ]]; then
@@ -854,7 +852,7 @@ jobs:
 
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
           
-          if [ ! -d "hls_output" ] ||[ -z "$(ls -A hls_output)" ]; then
+          if[ ! -d "hls_output" ] || [ -z "$(ls -A hls_output)" ]; then
             echo "❌ CRITICAL ERROR: hls_output is empty. Processing failed."
             exit 1
           fi

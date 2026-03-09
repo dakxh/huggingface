@@ -33,7 +33,7 @@ jobs:
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
           
-          if[ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] ||[ "$MSG_ID" == "error" ]; then
+          if [ -z "$TARGET_LINK" ] ||[ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
             echo "❌ API Error or No valid link found."
             echo "found=false" >> $GITHUB_ENV
             exit 0
@@ -123,7 +123,7 @@ jobs:
               if res.get('mimeType') == 'application/vnd.google-apps.folder':
                   print(f"📂 Detected Folder: {res['name']}. Traversing contents...")
                   q_url = f"https://www.googleapis.com/drive/v3/files?q='{fid}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)"
-                  children = requests.get(q_url, headers=headers).json().get('files',[])
+                  children = requests.get(q_url, headers=headers).json().get('files', [])
                   for child in children:
                       if child['mimeType'] == 'application/vnd.google-apps.folder':
                           process_node(child['id'])
@@ -156,7 +156,7 @@ jobs:
           done 9< <(find workspace -type f -name "*.zip")
           
           VIDEO_COUNT=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l)
-          if[ "$VIDEO_COUNT" -eq 0 ]; then
+          if [ "$VIDEO_COUNT" -eq 0 ]; then
              echo "❌ CRITICAL ERROR: Failed to locate any video files after download and extraction. Exiting."
              exit 1
           fi
@@ -502,7 +502,7 @@ jobs:
                       del catalog[existing_idx]['quality']
                   
                   if 'available_resolutions' not in catalog[existing_idx]: catalog[existing_idx]['available_resolutions'] = []
-                  if 'available_variations' not in catalog[existing_idx]: catalog[existing_idx]['available_variations'] = []
+                  if 'available_variations' not in catalog[existing_idx]: catalog[existing_idx]['available_variations'] =[]
                   if 'hls_manifest_url' not in catalog[existing_idx] or not isinstance(catalog[existing_idx]['hls_manifest_url'], dict):
                       catalog[existing_idx]['hls_manifest_url'] = {}
                   
@@ -532,7 +532,7 @@ jobs:
                       'year': movie_meta['year'],
                       'date_added': date_added,
                       'available_resolutions': [resolution_str],
-                      'available_variations': [variation_str],
+                      'available_variations':[variation_str],
                       'hls_manifest_url': {variation_str: manifest_url},
                       'poster_url': movie_meta.get('poster_url', '')
                   }
@@ -584,7 +584,7 @@ jobs:
             VARIATION=$(echo "$ROUTING" | awk -F'|' '{print $5}')
             RESOLUTION=$(echo "$ROUTING" | awk -F'|' '{print $6}')
             
-            if[ -n "$SUB_DIR" ]; then
+            if [ -n "$SUB_DIR" ]; then
                 TARGET_DIR="$BASE_DIR/$SUB_DIR"
             else
                 TARGET_DIR="$BASE_DIR"
@@ -714,7 +714,8 @@ jobs:
                 BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
               fi
               BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
-              RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)[ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
+              RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
+              [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
               printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" >> "hls_output/$TARGET_DIR/master.m3u8"
             fi
               

@@ -772,7 +772,8 @@ jobs:
                           fi
                         else
                           FINAL_SUB_NAME="${SUB_LANG}"
-                        fi [ -z "$FINAL_SUB_NAME" ] && FINAL_SUB_NAME="Sub_${index}"
+                        fi
+                        [ -z "$FINAL_SUB_NAME" ] && FINAL_SUB_NAME="Sub_${index}"
                         
                         printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "$M3U8_FILE"
                         printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="%s",LANGUAGE="%s",URI="%s"\n' "$FINAL_SUB_NAME" "${lang:-und}" "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"

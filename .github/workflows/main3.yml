@@ -190,6 +190,11 @@ jobs:
           quality = str(g.get('screen_size', ''))
           if not quality:
               quality = '1080p'
+
+          # ⚡ Add HDR check for routing ⚡
+          is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
+          if is_hdr:
+              quality += '.HDR'
               
           s = g.get('season')
           e = g.get('episode')

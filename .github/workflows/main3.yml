@@ -589,7 +589,7 @@ jobs:
             # --- BASH COLLISION LOCK ---
             ORIG_TARGET_DIR="$TARGET_DIR"
             COUNTER=2
-            while[ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
               echo "⚠️ Collision detected! $TARGET_DIR already exists."
               TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
               COUNTER=$((COUNTER+1))

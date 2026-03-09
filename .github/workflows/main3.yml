@@ -33,7 +33,7 @@ jobs:
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
           
-          if[ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] ||[ "$MSG_ID" == "error" ]; then
+          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
             echo "❌ API Error or No valid link found."
             echo "found=false" >> $GITHUB_ENV
             exit 0

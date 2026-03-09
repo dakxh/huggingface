@@ -123,7 +123,7 @@ jobs:
               if res.get('mimeType') == 'application/vnd.google-apps.folder':
                   print(f"📂 Detected Folder: {res['name']}. Traversing contents...")
                   q_url = f"https://www.googleapis.com/drive/v3/files?q='{fid}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)"
-                  children = requests.get(q_url, headers=headers).json().get('files',[])
+                  children = requests.get(q_url, headers=headers).json().get('files', [])
                   for child in children:
                       if child['mimeType'] == 'application/vnd.google-apps.folder':
                           process_node(child['id'])
@@ -263,7 +263,7 @@ jobs:
           EOF
 
           cat << 'EOF' > metadata_builder.py
-          import os, json, requests, subprocess, sys, re, time
+          import os, json, requests, subprocess, sys, re, time, shutil
           from guessit import guessit
           import urllib.parse
           
@@ -328,6 +328,21 @@ jobs:
           tmdb_key = os.environ.get('TMDB_API_KEY')
           
           catalog_path = 'hls_output/global_catalog.json'
+
+          # 🔥 FIX: JIT CLOUD SYNC FOR PARALLEL RUNNERS 🔥
+          # We strictly fetch HF dataset state precisely when encoding is complete right before the push.
+          if not os.path.exists(catalog_path):
+              token = os.environ.get('HF_TOKEN')
+              try:
+                  from huggingface_hub import hf_hub_download
+                  dl_path = hf_hub_download(repo_id=hf_repo, filename='global_catalog.json', repo_type='dataset', token=token, force_download=True)
+                  shutil.copy(dl_path, catalog_path)
+                  print('✅ JIT Sync: Successfully pulled latest global_catalog.json')
+              except Exception as e:
+                  print('⚠️ JIT Sync: No existing global_catalog.json found (or repo empty). Initializing a new one.')
+                  with open(catalog_path, 'w') as f:
+                      f.write('[]')
+                      
           try:
               with open(catalog_path, 'r') as f:
                   catalog = json.load(f)
@@ -416,7 +431,7 @@ jobs:
                   'hls_manifest_url': manifest_url
               }
               
-              show_meta['episodes'] = [ep for ep in show_meta['episodes'] if not (ep['season_number'] == season_num and ep['episode_number'] == episode_num)]
+              show_meta['episodes'] =[ep for ep in show_meta['episodes'] if not (ep['season_number'] == season_num and ep['episode_number'] == episode_num)]
               show_meta['episodes'].append(ep_entry)
               show_meta['episodes'] = sorted(show_meta['episodes'], key=lambda x: (x['season_number'], x['episode_number']))
               
@@ -502,7 +517,7 @@ jobs:
                       del catalog[existing_idx]['quality']
                   
                   if 'available_resolutions' not in catalog[existing_idx]: catalog[existing_idx]['available_resolutions'] = []
-                  if 'available_variations' not in catalog[existing_idx]: catalog[existing_idx]['available_variations'] =[]
+                  if 'available_variations' not in catalog[existing_idx]: catalog[existing_idx]['available_variations'] = []
                   if 'hls_manifest_url' not in catalog[existing_idx] or not isinstance(catalog[existing_idx]['hls_manifest_url'], dict):
                       catalog[existing_idx]['hls_manifest_url'] = {}
                   
@@ -551,25 +566,6 @@ jobs:
         run: |
           mkdir -p hls_output
           
-          # --- INITIALIZE OR FETCH GLOBAL CATALOG ---
-          python -c "
-          import os, json, shutil
-          from huggingface_hub import hf_hub_download
-          
-          repo = os.environ.get('HF_REPO')
-          token = os.environ.get('HF_TOKEN')
-          catalog_path = 'hls_output/global_catalog.json'
-          
-          try:
-              dl_path = hf_hub_download(repo_id=repo, filename='global_catalog.json', repo_type='dataset', token=token)
-              shutil.copy(dl_path, catalog_path)
-              print('✅ Successfully pulled existing global_catalog.json')
-          except Exception as e:
-              print('⚠️ No existing global_catalog.json found (or repo empty). Initializing a new one.')
-              with open(catalog_path, 'w') as f:
-                  f.write('[]')
-          "
-          
           while read -u 9 VIDEO_FILE; do
             echo "================================================================"
             echo "🎬 PROCESSING FILE: $VIDEO_FILE"
@@ -593,7 +589,7 @@ jobs:
             # --- BASH COLLISION LOCK ---
             ORIG_TARGET_DIR="$TARGET_DIR"
             COUNTER=2
-            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+            while[ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
               echo "⚠️ Collision detected! $TARGET_DIR already exists."
               TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
               COUNTER=$((COUNTER+1))
@@ -641,8 +637,9 @@ jobs:
                     *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                   esac
 
+                  # ⚡ ENHANCED FORMAT CATCHER & HOLLYWOOD DYNAMIC NORMALIZER ⚡
                   if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                    AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -af dynaudnorm=f=150:g=15:m=10.0,aformat=channel_layouts=5.1|stereo "
+                    AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=5.1|stereo "
                     DISPLAY_BITRATE="512kbps"
                   else
                     AUDIO_ENCODING+=" -c:a:$A_IDX copy "
@@ -670,8 +667,9 @@ jobs:
               AUDIO_MAPS="$AUDIO_MAPS -map 0:a:0"
               DETECTED_AUDIO="und"
               CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+              
               if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                AUDIO_ENCODING=" -c:a:0 aac -b:a:0 512k -filter:a:0 aformat=channel_layouts=5.1|stereo "
+                AUDIO_ENCODING=" -c:a:0 aac -b:a:0 512k -filter:a:0 dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=5.1|stereo "
                 DISPLAY_BITRATE="512kbps"
               else
                 AUDIO_ENCODING=" -c:a:0 copy "
@@ -682,6 +680,7 @@ jobs:
                   DISPLAY_BITRATE="Original"
                 fi
               fi
+              
               VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
               AUDIO_SED_CMDS+="s/NAME=\"audio_1\"/NAME=\"Unknown - ${DISPLAY_BITRATE}\"/g; "
             fi
@@ -773,6 +772,7 @@ jobs:
                         else
                           FINAL_SUB_NAME="${SUB_LANG}"
                         fi
+                        
                         [ -z "$FINAL_SUB_NAME" ] && FINAL_SUB_NAME="Sub_${index}"
                         
                         printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "$M3U8_FILE"
@@ -848,7 +848,7 @@ jobs:
             HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
 
-            # 3. HIGH-FUNCTIONAL PIPELINE GENERATOR + GLOBAL MERGE SEQUENCE
+            # 3. HIGH-FUNCTIONAL PIPELINE GENERATOR + JIT CLOUD SYNC SEQUENCE
             python metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "${DETECTED_AUDIO:-und}" "${DETECTED_SUBS:-}" "$IS_IMAX" "$IS_HDR" "$VARIATION" "$RESOLUTION"
 
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))

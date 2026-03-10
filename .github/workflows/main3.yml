@@ -594,9 +594,11 @@ jobs:
                     AUDIO_MAPS+=" -map 0:$index"
                     VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
                     if [[ "$IS_STEREO" -eq 0 ]]; then
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,volume=1.5,alimiter=limit=-0.5dB "
+                      # Surround: Safely isolate and boost the Center (Dialogue) channel by 180%, followed by a safety limiter
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=FL|FR=FR|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,alimiter=limit=-0.5dB "
                     else
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,volume=1.5,alimiter=limit=-0.5dB "
+                      # Stereo: Compress the loud action scenes, then heavily boost the whole track by 2.5x
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,acompressor=threshold=-15dB:ratio=4:attack=5:release=200:makeup=2.5,alimiter=limit=-0.5dB "
                     fi
                     AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - Pristine\"/g; "
                     A_IDX=$((A_IDX + 1))
@@ -652,9 +654,9 @@ jobs:
                 AUDIO_MAPS+=" -map 0:a:0"
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
                 if [[ "$IS_STEREO" -eq 0 ]]; then
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,volume=1.5,alimiter=limit=-0.5dB "
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=FL|FR=FR|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,alimiter=limit=-0.5dB "
                 else
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,volume=1.5,alimiter=limit=-0.5dB "
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,acompressor=threshold=-15dB:ratio=4:attack=5:release=200:makeup=2.5,alimiter=limit=-0.5dB "
                 fi
                 AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - Pristine\"/g; "
                 A_IDX=$((A_IDX + 1))

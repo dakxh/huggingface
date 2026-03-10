@@ -594,9 +594,9 @@ jobs:
                     AUDIO_MAPS+=" -map 0:$index"
                     VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
                     if [[ "$IS_STEREO" -eq 0 ]]; then
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1 "
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,volume=1.5,alimiter=limit=-0.5dB "
                     else
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo "
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,volume=1.5,alimiter=limit=-0.5dB "
                     fi
                     AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - Pristine\"/g; "
                     A_IDX=$((A_IDX + 1))
@@ -652,9 +652,9 @@ jobs:
                 AUDIO_MAPS+=" -map 0:a:0"
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
                 if [[ "$IS_STEREO" -eq 0 ]]; then
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1 "
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,volume=1.5,alimiter=limit=-0.5dB "
                 else
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo "
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,volume=1.5,alimiter=limit=-0.5dB "
                 fi
                 AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - Pristine\"/g; "
                 A_IDX=$((A_IDX + 1))
@@ -714,9 +714,10 @@ jobs:
             [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
             
             if [[ "$VIDEO_CODEC" == "hevc" ]]; then
-               VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
+              # Feed strict players the standard HEVC Main 10 + AAC codec string
+              VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
             else
-               VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""
+              VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""
             fi
             
             VIDEO_MANIFEST_INJECTION=$(printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" "$VIDEO_TAG_STR")

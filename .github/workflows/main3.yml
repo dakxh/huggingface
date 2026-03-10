@@ -594,11 +594,11 @@ jobs:
                     AUDIO_MAPS+=" -map 0:$index"
                     VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
                     if [[ "$IS_STEREO" -eq 0 ]]; then
-                      # Surround: Safely isolate and boost the Center (Dialogue) channel by 180%, followed by a safety limiter
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=1.8*FL|FR=1.8*FR|FC=1.8*FC|LFE=LFE|BL=1.8*BL|BR=1.8*BR,alimiter=limit=-0.5dB "
+                        # Surround: Safely isolate and boost the Center (Dialogue) channel by 180%, followed by a safety limiter
+                        AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=1.8*FL|FR=1.8*FR|FC=1.8*FC|LFE=LFE|BL=1.8*BL|BR=1.8*BR,loudnorm=I=-16:TP=-1.5:LRA=13,alimiter=limit=-0.5dB "
                     else
-                      # Stereo: Compress the loud action scenes, then heavily boost the whole track by 2.5x
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,acompressor=threshold=-4dB:ratio=2.5:attack=5:release=300:makeup=2.5:knee=6,alimiter=limit=-0.5dB "
+                        # Stereo: Compress the loud action scenes, then heavily boost the whole track by 2.5x
+                        AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,acompressor=threshold=-4dB:ratio=2.5:attack=5:release=300:makeup=2.5:knee=6,loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=-0.5dB "
                     fi
                     AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - Pristine\"/g; "
                     A_IDX=$((A_IDX + 1))
@@ -654,9 +654,11 @@ jobs:
                 AUDIO_MAPS+=" -map 0:a:0"
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
                 if [[ "$IS_STEREO" -eq 0 ]]; then
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=1.8*FL|FR=1.8*FR|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,alimiter=limit=-0.5dB "
+                        # Surround: Safely isolate and boost the Center (Dialogue) channel by 180%, followed by a safety limiter
+                        AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=1.8*FL|FR=1.8*FR|FC=1.8*FC|LFE=LFE|BL=1.8*BL|BR=1.8*BR,loudnorm=I=-16:TP=-1.5:LRA=13,alimiter=limit=-0.5dB "
                 else
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,acompressor=threshold=-4dB:ratio=2.5:attack=5:release=300:makeup=2.5:knee=6,alimiter=limit=-0.5dB "
+                        # Stereo: Compress the loud action scenes, then heavily boost the whole track by 2.5x
+                        AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,acompressor=threshold=-4dB:ratio=2.5:attack=5:release=300:makeup=2.5:knee=6,loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=-0.5dB "
                 fi
                 AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - Pristine\"/g; "
                 A_IDX=$((A_IDX + 1))

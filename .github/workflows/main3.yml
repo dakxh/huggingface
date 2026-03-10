@@ -642,10 +642,16 @@ jobs:
                   if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
                     # Only apply 5.1 Center-bleed if the source has MORE than 2 channels
                     if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -gt 2 ]]; then
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=FC|LFE=LFE|BL=BL|BR=BR,dynaudnorm=f=150:g=15:m=40.0 "
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX \
+                      pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=FC|LFE=LFE|BL=BL|BR=BR,\
+                      acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=0,\
+                      dynaudnorm=f=150:g=15:m=40.0 "
                     else
                       # It's native Stereo/Mono but in a heavy codec. Don't upmix to 5.1, just normalize and keep layout.
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo "
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX \
+                      acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=0,\
+                      dynaudnorm=f=150:g=15:m=40.0,\
+                      aformat=channel_layouts=stereo "
                     fi
                     DISPLAY_BITRATE="512kbps"
                   else

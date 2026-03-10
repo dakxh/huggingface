@@ -628,6 +628,7 @@ jobs:
               if [[ "$ctype" == "audio" ]]; then
                 if [[ "$lang $title" =~ $AUDIO_LANG_REGEX ]]; then
                   CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                  CHANNELS=$(ffprobe -v error -select_streams $index -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
                   
                   case "${lang,,}" in
                     en|eng|english) DISPLAY_LANG="English" ;;
@@ -637,9 +638,15 @@ jobs:
                     *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                   esac
 
-                  # ⚡ ENHANCED FORMAT CATCHER & HOLLYWOOD DYNAMIC NORMALIZER ⚡
+                  # ⚡ ENHANCED FORMAT CATCHER WITH SMART CHANNEL LOGIC ⚡
                   if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                    AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=5.1|stereo "
+                    # Only apply 5.1 Center-bleed if the source has MORE than 2 channels
+                    if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -gt 2 ]]; then
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX 'pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=FC|LFE=LFE|BL=BL|BR=BR,dynaudnorm=f=150:g=15:m=40.0' "
+                    else
+                      # It's native Stereo/Mono but in a heavy codec. Don't upmix to 5.1, just normalize and keep layout.
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX 'dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo' "
+                    fi
                     DISPLAY_BITRATE="512kbps"
                   else
                     AUDIO_ENCODING+=" -c:a:$A_IDX copy "
@@ -655,7 +662,9 @@ jobs:
                   VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
                   DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
                   
-                  AUDIO_SED_CMDS+="s/NAME=\"audio_${STREAM_IDX}\"/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
+                  DEFAULT_FLAG="YES"
+                  if [ "$A_IDX" -gt 0 ]; then DEFAULT_FLAG="NO"; fi
+                  AUDIO_SED_CMDS+="s/NAME=\"audio_${STREAM_IDX}\"[,]*DEFAULT=YES/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\",DEFAULT=${DEFAULT_FLAG}/g; s/NAME=\"audio_${STREAM_IDX}\"/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\",DEFAULT=${DEFAULT_FLAG}/g; "
                   
                   A_IDX=$((A_IDX + 1))
                   STREAM_IDX=$((STREAM_IDX + 1))
@@ -667,9 +676,14 @@ jobs:
               AUDIO_MAPS="$AUDIO_MAPS -map 0:a:0"
               DETECTED_AUDIO="und"
               CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+              CHANNELS=$(ffprobe -v error -select_streams a:0 -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
               
               if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                AUDIO_ENCODING=" -c:a:0 aac -b:a:0 512k -filter:a:0 dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=5.1|stereo "
+                if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -gt 2 ]]; then
+                  AUDIO_ENCODING=" -c:a:0 aac -b:a:0 512k -filter:a:0 'pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=FC|LFE=LFE|BL=BL|BR=BR,dynaudnorm=f=150:g=15:m=40.0' "
+                else
+                  AUDIO_ENCODING=" -c:a:0 aac -b:a:0 512k -filter:a:0 'dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo' "
+                fi
                 DISPLAY_BITRATE="512kbps"
               else
                 AUDIO_ENCODING=" -c:a:0 copy "
@@ -682,7 +696,7 @@ jobs:
               fi
               
               VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
-              AUDIO_SED_CMDS+="s/NAME=\"audio_1\"/NAME=\"Unknown - ${DISPLAY_BITRATE}\"/g; "
+              AUDIO_SED_CMDS+="s/NAME=\"audio_1\"[,]*DEFAULT=YES/NAME=\"Unknown - ${DISPLAY_BITRATE}\",DEFAULT=YES/g; s/NAME=\"audio_1\"/NAME=\"Unknown - ${DISPLAY_BITRATE}\",DEFAULT=YES/g; "
             fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             
@@ -701,6 +715,19 @@ jobs:
             if [ -n "$AUDIO_SED_CMDS" ]; then
               sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8"
             fi
+            
+            # ⚡ REMOVE REDUNDANT AUDIO-ONLY STREAM-INF TAGS ⚡
+            awk '/^#EXT-X-STREAM-INF/ {
+                if ($0 ~ /RESOLUTION=/) {
+                    print $0
+                    getline next_line
+                    print next_line
+                } else {
+                    getline next_line # skip the URI line
+                }
+                next
+            }
+            { print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_clean.m3u8" && mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
             
             # ⚡ THE HEVC CHROME BYPASS ⚡
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8"

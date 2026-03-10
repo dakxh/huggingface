@@ -175,30 +175,30 @@ jobs:
           vid_type = g.get('type')
           title = str(g.get('title', '')).strip()
           
-          # --- SMART TITLE FALLBACK ---
-          year_match = re.search(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', filename)
-          if year_match:
-              raw_prefix = filename[:year_match.start()]
+          # --- SMART TITLE FALLBACK (Right-to-Left Fix) ---
+          year_matches = list(re.finditer(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', filename))
+          if year_matches:
+              last_year_match = year_matches[-1]
+              raw_prefix = filename[:last_year_match.start()]
               regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
               if len(regex_title) > len(title):
                   title = regex_title
+              year = last_year_match.group(1)
+          else:
+              year = str(g.get('year', ''))
                   
           if not title: title = 'Unknown_Title'
           title = title.title().replace(' ', '.')
-          
-          year = str(g.get('year', ''))
           
           resolution = str(g.get('screen_size', ''))
           if not resolution:
               resolution = '1080p'
           else:
-              # Fallback standardize edge-cases
               if '4k' in resolution.lower() or '2160' in resolution.lower():
                   resolution = '2160p'
               elif '1080' in resolution.lower():
                   resolution = '1080p'
 
-          # Check Metadata explicitly mapped dynamically via probing
           is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
           dynamic_range = 'HDR' if is_hdr else 'SDR'
 
@@ -263,9 +263,8 @@ jobs:
           EOF
 
           cat << 'EOF' > metadata_builder.py
-          import os, json, requests, subprocess, sys, re, time, shutil
+          import os, json, requests, subprocess, sys, re, time, urllib.parse
           from guessit import guessit
-          import urllib.parse
           
           file_path = sys.argv[1]
           base_dir = sys.argv[2]
@@ -273,7 +272,6 @@ jobs:
           audio_str = sys.argv[4]
           subs_str = sys.argv[5]
           
-          # Inherited from Router mapping to prevent collision checks later on.
           is_imax_str = sys.argv[6]
           is_hdr_str = sys.argv[7]
           variation_str = sys.argv[8]
@@ -284,7 +282,6 @@ jobs:
           
           available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
           available_subs = list(set([x.strip() for x in subs_str.split() if x.strip()]))
-          
           date_added = int(time.time())
           
           filename = os.path.basename(file_path)
@@ -293,17 +290,19 @@ jobs:
           
           title = str(g.get('title', '')).strip()
           
-          # --- SMART TITLE FALLBACK ---
-          year_match = re.search(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', filename)
-          if year_match:
-              raw_prefix = filename[:year_match.start()]
+          # --- SMART TITLE FALLBACK (Right-to-Left Fix) ---
+          year_matches = list(re.finditer(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', filename))
+          if year_matches:
+              last_year_match = year_matches[-1]
+              raw_prefix = filename[:last_year_match.start()]
               regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
               if len(regex_title) > len(title):
                   title = regex_title
+              year = last_year_match.group(1)
+          else:
+              year = str(g.get('year', ''))
                   
           if not title: title = 'Unknown Title'
-          
-          year = str(g.get('year', ''))
 
           dur_seconds = 0.0
           try:
@@ -324,30 +323,15 @@ jobs:
           hf_repo = os.environ.get('HF_REPO', '')
           safe_target_dir = urllib.parse.quote(target_dir)
           manifest_url = f'https://huggingface.co/datasets/{hf_repo}/resolve/main/{safe_target_dir}/master.m3u8'
-
           tmdb_key = os.environ.get('TMDB_API_KEY')
           
-          catalog_path = 'hls_output/global_catalog.json'
-
-          # 🔥 FIX: JIT CLOUD SYNC FOR PARALLEL RUNNERS 🔥
-          # We strictly fetch HF dataset state precisely when encoding is complete right before the push.
-          if not os.path.exists(catalog_path):
-              token = os.environ.get('HF_TOKEN')
-              try:
-                  from huggingface_hub import hf_hub_download
-                  dl_path = hf_hub_download(repo_id=hf_repo, filename='global_catalog.json', repo_type='dataset', token=token, force_download=True)
-                  shutil.copy(dl_path, catalog_path)
-                  print('✅ JIT Sync: Successfully pulled latest global_catalog.json')
-              except Exception as e:
-                  print('⚠️ JIT Sync: No existing global_catalog.json found (or repo empty). Initializing a new one.')
-                  with open(catalog_path, 'w') as f:
-                      f.write('[]')
-                      
+          # ⚡ LOCAL SESSION CATALOG ISOLATION ⚡
+          catalog_path = 'hls_output/session_catalog.json'
           try:
               with open(catalog_path, 'r') as f:
                   catalog = json.load(f)
           except:
-              catalog =[]
+              catalog = []
               
           if sub_dir:
               # ====== TV SHOW ======
@@ -356,17 +340,14 @@ jobs:
               
               if not s_val:
                   s_match = re.search(r'[Ss](\d{1,2})[Ee]\d', filename)
-                  if s_match:
-                      s_val = int(s_match.group(1))
+                  if s_match: s_val = int(s_match.group(1))
                   else:
                       s_path_match = re.search(r'[Ss]eason\s?0*(\d{1,2})', file_path, re.IGNORECASE)
-                      if s_path_match:
-                          s_val = int(s_path_match.group(1))
+                      if s_path_match: s_val = int(s_path_match.group(1))
 
               if not e_val:
                   anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', filename)
-                  if anime_match:
-                      e_val = int(anime_match.group(1))
+                  if anime_match: e_val = int(anime_match.group(1))
               
               season_num = int(s_val[0] if isinstance(s_val, list) else s_val) if s_val else 1
               episode_num = int(e_val[0] if isinstance(e_val, list) else e_val) if e_val else 1
@@ -415,75 +396,49 @@ jobs:
                   try:
                       ep_url = f'https://api.themoviedb.org/3/tv/{show_meta["id"]}/season/{season_num}/episode/{episode_num}?api_key={tmdb_key}'
                       ep_res = requests.get(ep_url).json()
-                      if ep_res.get('name'):
-                          episode_name = ep_res['name']
+                      if ep_res.get('name'): episode_name = ep_res['name']
                   except: pass
                   
-              if 'episodes' not in show_meta:
-                  show_meta['episodes'] =[]
+              if 'episodes' not in show_meta: show_meta['episodes'] =[]
               
               ep_entry = {
-                  'season_number': season_num,
-                  'episode_number': episode_num,
-                  'episode_name': episode_name,
-                  'quality': resolution_str,
-                  'date_added': date_added,
-                  'hls_manifest_url': manifest_url
+                  'season_number': season_num, 'episode_number': episode_num, 'episode_name': episode_name,
+                  'quality': resolution_str, 'date_added': date_added, 'hls_manifest_url': manifest_url
               }
               
               show_meta['episodes'] =[ep for ep in show_meta['episodes'] if not (ep['season_number'] == season_num and ep['episode_number'] == episode_num)]
               show_meta['episodes'].append(ep_entry)
               show_meta['episodes'] = sorted(show_meta['episodes'], key=lambda x: (x['season_number'], x['episode_number']))
               
-              with open(show_meta_path, 'w') as f:
-                  json.dump(show_meta, f, indent=4)
+              with open(show_meta_path, 'w') as f: json.dump(show_meta, f, indent=4)
                   
               ep_meta = {
-                  'id': show_meta['id'],
-                  'series_title': title,
-                  'season_number': season_num,
-                  'episode_number': episode_num,
-                  'episode_name': episode_name,
-                  'original_filename': filename,
-                  'quality': resolution_str,
-                  'duration': duration_formatted,
-                  'size': size_str,
-                  'available_audio': available_audio,
-                  'available_subs': available_subs,
-                  'date_added': date_added,
-                  'hls_manifest_url': manifest_url
+                  'id': show_meta['id'], 'series_title': title, 'season_number': season_num,
+                  'episode_number': episode_num, 'episode_name': episode_name, 'original_filename': filename,
+                  'quality': resolution_str, 'duration': duration_formatted, 'size': size_str,
+                  'available_audio': available_audio, 'available_subs': available_subs,
+                  'date_added': date_added, 'hls_manifest_url': manifest_url
               }
-              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
-                  json.dump(ep_meta, f, indent=4)
+              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
                   
               series_metadata_url = f"https://huggingface.co/datasets/{hf_repo}/resolve/main/{urllib.parse.quote(base_dir)}/metadata.json"
-              
               catalog =[item for item in catalog if item.get('type') != 'episode']
               catalog =[item for item in catalog if not (item.get('type') == 'series' and item.get('title') == show_meta['title'])]
               
-              catalog_entry = {
-                  'id': show_meta['id'],
-                  'type': 'series',
-                  'title': show_meta['title'],
-                  'year': show_meta['year'],
-                  'quality': resolution_str,
-                  'date_added': date_added,
-                  'series_metadata_url': series_metadata_url,
-                  'poster_url': show_meta.get('poster_url', '')
-              }
-              catalog.append(catalog_entry)
+              catalog.append({
+                  'id': show_meta['id'], 'type': 'series', 'title': show_meta['title'],
+                  'year': show_meta['year'], 'quality': resolution_str, 'date_added': date_added,
+                  'series_metadata_url': series_metadata_url, 'poster_url': show_meta.get('poster_url', '')
+              })
                       
           else:
-              # ====== MOVIE NEW METADATA ROUTINE ======
-              
+              # ====== MOVIE ======
               movie_meta = {
                   'id': 0, 'type': 'movie', 'original_filename': filename, 'title': title,
                   'year': year, 'rating': 0.0, 'quality': resolution_str, 
                   'duration': duration_formatted, 'IMAX': is_imax, 'HDR': is_hdr, 'poster_url': '',
                   'backdrop_url': '', 'hls_manifest_url': manifest_url, 'overview': '',
-                  'available_audio': available_audio,
-                  'available_subs': available_subs,
-                  'date_added': date_added
+                  'available_audio': available_audio, 'available_subs': available_subs, 'date_added': date_added
               }
               
               if tmdb_key and title != 'Unknown Title':
@@ -502,10 +457,8 @@ jobs:
                           if match.get('backdrop_path'): movie_meta['backdrop_url'] = f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{match.get('backdrop_path')}"
                   except: pass
                   
-              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f:
-                  json.dump(movie_meta, f, indent=4)
+              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(movie_meta, f, indent=4)
                   
-              # Smart dictionary merge sequence tracking
               existing_idx = None
               for i, item in enumerate(catalog):
                   if item.get('type') == 'movie' and item.get('title') == movie_meta['title'] and item.get('year') == movie_meta['year']:
@@ -513,48 +466,33 @@ jobs:
                       break
                       
               if existing_idx is not None:
-                  if 'quality' in catalog[existing_idx]:
-                      del catalog[existing_idx]['quality']
-                  
+                  if 'quality' in catalog[existing_idx]: del catalog[existing_idx]['quality']
                   if 'available_resolutions' not in catalog[existing_idx]: catalog[existing_idx]['available_resolutions'] = []
                   if 'available_variations' not in catalog[existing_idx]: catalog[existing_idx]['available_variations'] = []
                   if 'hls_manifest_url' not in catalog[existing_idx] or not isinstance(catalog[existing_idx]['hls_manifest_url'], dict):
                       catalog[existing_idx]['hls_manifest_url'] = {}
                   
-                  # Append Resolution Logically + Integer sorting
                   if resolution_str not in catalog[existing_idx]['available_resolutions']:
                       catalog[existing_idx]['available_resolutions'].append(resolution_str)
                       catalog[existing_idx]['available_resolutions'] = sorted(catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
                       
-                  # Append Variation Link Logically
                   if variation_str not in catalog[existing_idx]['available_variations']:
                       catalog[existing_idx]['available_variations'].append(variation_str)
                   
                   catalog[existing_idx]['hls_manifest_url'][variation_str] = manifest_url
-                  
-                  # Fallback injection block in case metadata TMDB keys shifted
                   if catalog[existing_idx]['id'] == 0 and movie_meta['id'] != 0:
                       catalog[existing_idx]['id'] = movie_meta['id']
                       catalog[existing_idx]['poster_url'] = movie_meta.get('poster_url', '')
-                  
-                  # Graceful front-end sorting Upgrade logic
                   catalog[existing_idx]['date_added'] = date_added
               else:
-                  catalog_entry = {
-                      'id': movie_meta['id'],
-                      'type': 'movie',
-                      'title': movie_meta['title'],
-                      'year': movie_meta['year'],
-                      'date_added': date_added,
-                      'available_resolutions': [resolution_str],
-                      'available_variations': [variation_str],
-                      'hls_manifest_url': {variation_str: manifest_url},
-                      'poster_url': movie_meta.get('poster_url', '')
-                  }
-                  catalog.append(catalog_entry)
+                  catalog.append({
+                      'id': movie_meta['id'], 'type': 'movie', 'title': movie_meta['title'],
+                      'year': movie_meta['year'], 'date_added': date_added,
+                      'available_resolutions': [resolution_str], 'available_variations': [variation_str],
+                      'hls_manifest_url': {variation_str: manifest_url}, 'poster_url': movie_meta.get('poster_url', '')
+                  })
               
-          with open(catalog_path, 'w') as f:
-              json.dump(catalog, f, indent=4)
+          with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
           EOF
 
       - name: Process Master Loop (Batch Parsing, FFmpeg, Metadata)
@@ -580,11 +518,7 @@ jobs:
             VARIATION=$(echo "$ROUTING" | awk -F'|' '{print $5}')
             RESOLUTION=$(echo "$ROUTING" | awk -F'|' '{print $6}')
             
-            if [ -n "$SUB_DIR" ]; then
-                TARGET_DIR="$BASE_DIR/$SUB_DIR"
-            else
-                TARGET_DIR="$BASE_DIR"
-            fi
+            if [ -n "$SUB_DIR" ]; then TARGET_DIR="$BASE_DIR/$SUB_DIR"; else TARGET_DIR="$BASE_DIR"; fi
             
             # --- BASH COLLISION LOCK ---
             ORIG_TARGET_DIR="$TARGET_DIR"
@@ -596,18 +530,11 @@ jobs:
             done
             
             echo "📁 Final Safe HF Directory: $TARGET_DIR"
-            mkdir -p "hls_output/$TARGET_DIR"
-            mkdir -p "hls_output/$BASE_DIR"
+            mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
             
             # 2. FFMPEG TRANSCODING
             VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-            if [[ "$VIDEO_CODEC" == "hevc" ]]; then
-              V_TAG="-tag:v hvc1"
-              M3U8_V_CODEC="hvc1.2.4.L153.B0"
-            else
-              V_TAG="-tag:v avc1"
-              M3U8_V_CODEC="avc1.640028"
-            fi
+            if [[ "$VIDEO_CODEC" == "hevc" ]]; then V_TAG="-tag:v hvc1"; else V_TAG="-tag:v avc1"; fi
 
             STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
             AUDIO_MAPS="-map 0:V:0"
@@ -615,7 +542,6 @@ jobs:
             AUDIO_ENCODING=""
             
             A_IDX=0
-            STREAM_IDX=1
             AUDIO_SED_CMDS=""
             
             LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
@@ -629,6 +555,7 @@ jobs:
                 if [[ "$lang $title" =~ $AUDIO_LANG_REGEX ]]; then
                   CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
                   CHANNELS=$(ffprobe -v error -select_streams $index -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
+                  ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
                   
                   case "${lang,,}" in
                     en|eng|english) DISPLAY_LANG="English" ;;
@@ -638,65 +565,111 @@ jobs:
                     *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                   esac
 
-                  # ⚡ ENHANCED FORMAT CATCHER WITH SMART CHANNEL LOGIC ⚡
-                  if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                    # Only apply 5.1 Center-bleed if the source has MORE than 2 channels
-                    if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -gt 2 ]]; then
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=FC|LFE=LFE|BL=BL|BR=BR,acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=1,dynaudnorm=f=150:g=15:m=40.0 "
-                    else
-                      # It's native Stereo/Mono but in a heavy codec. Don't upmix to 5.1, just normalize and keep layout.
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=1,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo "
-                    fi
-                    DISPLAY_BITRATE="512kbps"
+                  if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                    ORIG_BITRATE_K="$((ORIG_BITRATE / 1000))k"
+                    DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
                   else
-                    AUDIO_ENCODING+=" -c:a:$A_IDX copy "
-                    ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
-                    if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
-                      DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
-                    else
-                      DISPLAY_BITRATE="Original"
-                    fi
+                    ORIG_BITRATE_K="256k"
+                    DISPLAY_BITRATE="Original"
                   fi
                   
-                  AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
-                  VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
-                  DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
+                  IS_COMPATIBLE=0
+                  if [[ ! "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then IS_COMPATIBLE=1; fi
                   
-                  DEFAULT_FLAG="YES"
-                  if [ "$A_IDX" -gt 0 ]; then DEFAULT_FLAG="NO"; fi
-                  AUDIO_SED_CMDS+="s/NAME=\"audio_${STREAM_IDX}\"[,]*DEFAULT=YES/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\",DEFAULT=${DEFAULT_FLAG}/g; s/NAME=\"audio_${STREAM_IDX}\"/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\",DEFAULT=${DEFAULT_FLAG}/g; "
-                  
-                  A_IDX=$((A_IDX + 1))
-                  STREAM_IDX=$((STREAM_IDX + 1))
+                  IS_STEREO=0
+                  if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -le 2 ]]; then IS_STEREO=1; fi
+
+                  # ⚡ SMART DUAL-TRACK ROUTING LOGIC ⚡
+                  if [[ "$IS_COMPATIBLE" -eq 1 && "$IS_STEREO" -eq 1 ]]; then
+                    # ROUTE A: Universal Track (U_)
+                    AUDIO_MAPS+=" -map 0:$index"
+                    VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
+                    AUDIO_ENCODING+=" -c:a:$A_IDX copy "
+                    AUDIO_SED_CMDS+="s/NAME=\"TRACK_${A_IDX}\"/NAME=\"U_${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
+                    DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
+                    A_IDX=$((A_IDX + 1))
+                  else
+                    # ROUTE B: Dual-Track Split
+                    # 1. Pristine Track (P_)
+                    AUDIO_MAPS+=" -map 0:$index"
+                    VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
+                    if [[ "$IS_STEREO" -eq 0 ]]; then
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1 "
+                    else
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo "
+                    fi
+                    AUDIO_SED_CMDS+="s/NAME=\"TRACK_${A_IDX}\"/NAME=\"P_${DISPLAY_LANG} - Pristine\"/g; "
+                    A_IDX=$((A_IDX + 1))
+                    
+                    # 2. Mobile Track (M_)
+                    AUDIO_MAPS+=" -map 0:$index"
+                    VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
+                    if [[ "$IS_STEREO" -eq 0 ]]; then
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=FC|LFE=LFE|BL=BL|BR=BR,acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=1,dynaudnorm=f=150:g=15:m=40.0 "
+                    else
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=1,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo "
+                    fi
+                    AUDIO_SED_CMDS+="s/NAME=\"TRACK_${A_IDX}\"/NAME=\"M_${DISPLAY_LANG} - Mobile Boost\"/g; "
+                    A_IDX=$((A_IDX + 1))
+                    
+                    DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
+                  fi
                 fi
               fi
             done <<< "$STREAMS"
             
+            # --- THE FALLBACK BLOCK ---
             if [[ "$A_IDX" -eq 0 ]]; then
-              AUDIO_MAPS="$AUDIO_MAPS -map 0:a:0"
               DETECTED_AUDIO="und"
+              DISPLAY_LANG="Unknown"
               CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
               CHANNELS=$(ffprobe -v error -select_streams a:0 -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
+              ORIG_BITRATE=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
               
-              if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -gt 2 ]]; then
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=FC|LFE=LFE|BL=BL|BR=BR,acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=1,dynaudnorm=f=150:g=15:m=40.0 "
-                else
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=1,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo "
-                fi
-                DISPLAY_BITRATE="512kbps"
+              if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                ORIG_BITRATE_K="$((ORIG_BITRATE / 1000))k"
+                DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
               else
-                AUDIO_ENCODING=" -c:a:0 copy "
-                ORIG_BITRATE=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
-                if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
-                  DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
-                else
-                  DISPLAY_BITRATE="Original"
-                fi
+                ORIG_BITRATE_K="256k"
+                DISPLAY_BITRATE="Original"
               fi
               
-              VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
-              AUDIO_SED_CMDS+="s/NAME=\"audio_1\"[,]*DEFAULT=YES/NAME=\"Unknown - ${DISPLAY_BITRATE}\",DEFAULT=YES/g; s/NAME=\"audio_1\"/NAME=\"Unknown - ${DISPLAY_BITRATE}\",DEFAULT=YES/g; "
+              IS_COMPATIBLE=0
+              if [[ ! "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then IS_COMPATIBLE=1; fi
+              IS_STEREO=0
+              if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -le 2 ]]; then IS_STEREO=1; fi
+
+              if [[ "$IS_COMPATIBLE" -eq 1 && "$IS_STEREO" -eq 1 ]]; then
+                # ROUTE A: Universal Track (U_)
+                AUDIO_MAPS+=" -map 0:a:0"
+                VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
+                AUDIO_ENCODING+=" -c:a:$A_IDX copy "
+                AUDIO_SED_CMDS+="s/NAME=\"TRACK_${A_IDX}\"/NAME=\"U_${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
+                A_IDX=$((A_IDX + 1))
+              else
+                # ROUTE B: Dual-Track Split
+                # 1. Pristine Track (P_)
+                AUDIO_MAPS+=" -map 0:a:0"
+                VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
+                if [[ "$IS_STEREO" -eq 0 ]]; then
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1 "
+                else
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo "
+                fi
+                AUDIO_SED_CMDS+="s/NAME=\"TRACK_${A_IDX}\"/NAME=\"P_${DISPLAY_LANG} - Pristine\"/g; "
+                A_IDX=$((A_IDX + 1))
+                
+                # 2. Mobile Track (M_)
+                AUDIO_MAPS+=" -map 0:a:0"
+                VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
+                if [[ "$IS_STEREO" -eq 0 ]]; then
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=FC|LFE=LFE|BL=BL|BR=BR,acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=1,dynaudnorm=f=150:g=15:m=40.0 "
+                else
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX acompressor=threshold=-9dB:ratio=6:attack=5:release=300:makeup=1,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo "
+                fi
+                AUDIO_SED_CMDS+="s/NAME=\"TRACK_${A_IDX}\"/NAME=\"M_${DISPLAY_LANG} - Mobile Boost\"/g; "
+                A_IDX=$((A_IDX + 1))
+              fi
             fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             
@@ -711,32 +684,30 @@ jobs:
               continue
             fi
             
-            # --- APPLY AUDIO NAMING REPLACEMENTS ---
             if [ -n "$AUDIO_SED_CMDS" ]; then
               sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8"
             fi
             
-            # ⚡ REMOVE REDUNDANT AUDIO-ONLY STREAM-INF TAGS ⚡
-            awk '/^#EXT-X-STREAM-INF/ {
-                if ($0 ~ /RESOLUTION=/) {
-                    print $0
-                    getline next_line
-                    print next_line
-                } else {
-                    getline next_line # skip the URI line
-                }
-                next
-            }
-            { print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_clean.m3u8" && mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+            # --- INTELLIGENT DEFAULT TAGGING (Priority: U_ > M_ > P_) ---
+            awk '{
+                if ($0 ~ /TYPE=AUDIO/) { gsub(/DEFAULT=YES/, "DEFAULT=NO", $0); print $0; } else { print $0; }
+            }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+
+            if grep -q 'NAME="U_' "hls_output/$TARGET_DIR/master.m3u8"; then
+                awk '/NAME="U_/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+            elif grep -q 'NAME="M_' "hls_output/$TARGET_DIR/master.m3u8"; then
+                awk '/NAME="M_/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+            else
+                awk '/TYPE=AUDIO/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+            fi
             
-            # ⚡ THE HEVC CHROME BYPASS ⚡
+            awk '/^#EXT-X-STREAM-INF/ { if ($0 ~ /RESOLUTION=/) { print $0; getline n; print n; } else { getline n; } next } { print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_clean.m3u8" && mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8"
             
             if ! grep -q "stream_0.m3u8" "hls_output/$TARGET_DIR/master.m3u8"; then
               BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
               if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
-                SIZE=$(stat -c %s "$VIDEO_FILE")
-                DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                SIZE=$(stat -c %s "$VIDEO_FILE"); DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
                 BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
               fi
               BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
@@ -751,7 +722,6 @@ jobs:
             VID_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
             VID_DUR_INT=$(printf "%.0f" "$VID_DUR" 2>/dev/null || echo "36000")
             
-            # --- PASS 1 & 2: SUBTITLE LOGIC ---
             while IFS=',' read -r index ctype lang title; do
               if [[ "$ctype" == "subtitle" ]]; then
                 if [[ "$lang $title" =~ $LANG_REGEX ]]; then
@@ -764,10 +734,7 @@ jobs:
                     
                     if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
                       if [ -s "$VTT_FILE" ]; then
-                        
-                        # ⚡ TS SYNC FIX: Inject strict PTS map ⚡
                         sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$VTT_FILE"
-                        
                         HAS_SUBS="true"
                         DETECTED_SUBS="$DETECTED_SUBS ${lang:-und}"
                         
@@ -784,29 +751,17 @@ jobs:
                         CLEAN_TITLE="$(echo "$CLEAN_TITLE" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2)); print $0}')"
                         CLEAN_TITLE=$(echo "$CLEAN_TITLE" | sed 's/\bSdh\b/SDH/g; s/\bCc\b/CC/g')
 
-                        if [[ "${CLEAN_TITLE,,}" == "${lang,,}" || "${CLEAN_TITLE,,}" == "${SUB_LANG,,}" ]]; then
-                          CLEAN_TITLE=""
-                        fi
-
+                        if [[ "${CLEAN_TITLE,,}" == "${lang,,}" || "${CLEAN_TITLE,,}" == "${SUB_LANG,,}" ]]; then CLEAN_TITLE=""; fi
                         if [ -n "$CLEAN_TITLE" ]; then
-                          CLEAN_TITLE_LOWER="${CLEAN_TITLE,,}"
-                          SUB_LANG_LOWER="${SUB_LANG,,}"
-                          if [[ "$CLEAN_TITLE_LOWER" == "$SUB_LANG_LOWER"* ]]; then
-                            FINAL_SUB_NAME="$CLEAN_TITLE"
-                          else
-                            FINAL_SUB_NAME="${SUB_LANG} - ${CLEAN_TITLE}"
-                          fi
-                        else
-                          FINAL_SUB_NAME="${SUB_LANG}"
-                        fi
+                          if [[ "${CLEAN_TITLE,,}" == "${SUB_LANG,,}"* ]]; then FINAL_SUB_NAME="$CLEAN_TITLE"
+                          else FINAL_SUB_NAME="${SUB_LANG} - ${CLEAN_TITLE}"; fi
+                        else FINAL_SUB_NAME="${SUB_LANG}"; fi
                         
                         [ -z "$FINAL_SUB_NAME" ] && FINAL_SUB_NAME="Sub_${index}"
                         
                         printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "$M3U8_FILE"
                         printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="%s",LANGUAGE="%s",URI="%s"\n' "$FINAL_SUB_NAME" "${lang:-und}" "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"
-                      else
-                        rm -f "$VTT_FILE"
-                      fi
+                      else rm -f "$VTT_FILE"; fi
                     fi
                   fi
                 fi
@@ -815,17 +770,14 @@ jobs:
             
             if [[ "$HAS_SUBS" == "false" ]]; then
               echo "⚠️ No matching subtitles found. Scanning unidentified tracks for English..."
-              
               cat << 'EOF' > detect_eng.py
           import sys, re
           try:
-              with open(sys.argv[1], 'r', encoding='utf-8', errors='ignore') as f:
-                  text = f.read().lower()
+              with open(sys.argv[1], 'r', encoding='utf-8', errors='ignore') as f: text = f.read().lower()
               words = re.findall(r'\b[a-z]{2,5}\b', text)
               eng = {'the','and','that','have','for','not','with','you','this','but','his','from','they','say','she','will','what','who','get','when','make','can','like','time','just','know','take','your','good','some','could','them','other','than','then','now','look','only','come','over','think','also','back','after','how','our','first','well','way','even','want','because','any','these','give','most','are','was','were'}
               print('true' if sum(1 for w in words if w in eng) > 15 else 'false')
-          except:
-              print('false')
+          except: print('false')
           EOF
 
               while IFS=',' read -r index ctype lang title; do
@@ -833,33 +785,20 @@ jobs:
                   SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g)$ ]]; then
                     TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
-                    
                     if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1; then
                       if [ -s "$TEMP_VTT" ]; then
                         IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")
-                        
                         if [[ "$IS_ENGLISH" == "true" ]]; then
                           echo "✅ English auto-detected in track index $index!"
-                          
-                          # ⚡ TS SYNC FIX: Inject strict PTS map ⚡
                           sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$TEMP_VTT"
-                          
-                          VTT_BASENAME="subs_${index}_eng.vtt"
-                          M3U8_BASENAME="subs_${index}_eng.m3u8"
-                          
+                          VTT_BASENAME="subs_${index}_eng.vtt"; M3U8_BASENAME="subs_${index}_eng.m3u8"
                           mv "$TEMP_VTT" "hls_output/$TARGET_DIR/$VTT_BASENAME"
-                          HAS_SUBS="true"
-                          DETECTED_SUBS="$DETECTED_SUBS eng"
-                          
+                          HAS_SUBS="true"; DETECTED_SUBS="$DETECTED_SUBS eng"
                           printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "hls_output/$TARGET_DIR/$M3U8_BASENAME"
                           printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="English (Auto)",LANGUAGE="eng",URI="%s"\n' "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"
                           break
-                        else
-                          rm -f "$TEMP_VTT"
-                        fi
-                      else
-                        rm -f "$TEMP_VTT"
-                      fi
+                        else rm -f "$TEMP_VTT"; fi
+                      else rm -f "$TEMP_VTT"; fi
                     fi
                   fi
                 fi
@@ -875,7 +814,7 @@ jobs:
             HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
 
-            # 3. HIGH-FUNCTIONAL PIPELINE GENERATOR + JIT CLOUD SYNC SEQUENCE
+            # 3. LOCAL METADATA GENERATOR (No Cloud Sync yet)
             python metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "${DETECTED_AUDIO:-und}" "${DETECTED_SUBS:-}" "$IS_IMAX" "$IS_HDR" "$VARIATION" "$RESOLUTION"
 
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
@@ -897,22 +836,97 @@ jobs:
           
           repo = os.environ.get('HF_REPO')
           token = os.environ.get('HF_TOKEN')
-          
           api = HfApi(token=token)
           
-          print('🚀 Initiating batch upload to Hugging Face via upload_large_folder...')
-          
+          print('🚀 Initiating batch upload to Hugging Face...')
           try:
               api.upload_large_folder(
                   folder_path='hls_output',
                   repo_id=repo,
                   repo_type='dataset',
-                  ignore_patterns=['*.torrent', '*.zip', 'temp_*']
+                  ignore_patterns=['*.torrent', '*.zip', 'temp_*', 'session_catalog.json']
               )
               print('✅ Upload completed successfully.')
           except Exception as e:
               print(f'❌ Upload failed: {e}')
               exit(1)
+          "
+
+      - name: Atomic Cloud Catalog Sync
+        if: env.found == 'true' && success()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ secrets.HF_REPO }}
+        run: |
+          python -c "
+          import os, json
+          from huggingface_hub import hf_hub_download, HfApi
+
+          repo = os.environ.get('HF_REPO')
+          token = os.environ.get('HF_TOKEN')
+          api = HfApi(token=token)
+
+          print('⚡ Initiating Atomic Catalog Sync...')
+
+          try:
+              dl_path = hf_hub_download(repo_id=repo, filename='global_catalog.json', repo_type='dataset', token=token, force_download=True)
+              with open(dl_path, 'r') as f:
+                  global_catalog = json.load(f)
+          except Exception:
+              global_catalog = []
+
+          try:
+              with open('hls_output/session_catalog.json', 'r') as f:
+                  session_catalog = json.load(f)
+          except Exception:
+              session_catalog = []
+
+          if not session_catalog:
+              print('⚠️ No session catalog found. Nothing to merge.')
+              exit(0)
+
+          for session_item in session_catalog:
+              if session_item.get('type') == 'series':
+                  global_catalog = [item for item in global_catalog if not (item.get('type') == 'series' and item.get('title') == session_item['title'])]
+                  global_catalog.append(session_item)
+              elif session_item.get('type') == 'movie':
+                  existing_idx = None
+                  for i, item in enumerate(global_catalog):
+                      if item.get('type') == 'movie' and item.get('title') == session_item['title'] and item.get('year') == session_item['year']:
+                          existing_idx = i
+                          break
+                  if existing_idx is not None:
+                      if 'available_resolutions' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_resolutions'] = []
+                      if 'available_variations' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_variations'] = []
+                      if 'hls_manifest_url' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['hls_manifest_url'], dict):
+                          global_catalog[existing_idx]['hls_manifest_url'] = {}
+                          
+                      for res in session_item.get('available_resolutions', []):
+                          if res not in global_catalog[existing_idx]['available_resolutions']:
+                              global_catalog[existing_idx]['available_resolutions'].append(res)
+                      global_catalog[existing_idx]['available_resolutions'] = sorted(global_catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
+                      
+                      for var in session_item.get('available_variations', []):
+                          if var not in global_catalog[existing_idx]['available_variations']:
+                              global_catalog[existing_idx]['available_variations'].append(var)
+                              
+                      if isinstance(session_item.get('hls_manifest_url'), dict):
+                          global_catalog[existing_idx]['hls_manifest_url'].update(session_item['hls_manifest_url'])
+                      
+                      global_catalog[existing_idx]['date_added'] = session_item['date_added']
+                  else:
+                      global_catalog.append(session_item)
+
+          with open('latest_global_catalog.json', 'w') as f:
+              json.dump(global_catalog, f, indent=4)
+
+          api.upload_file(
+              path_or_fileobj='latest_global_catalog.json',
+              path_in_repo='global_catalog.json',
+              repo_id=repo,
+              repo_type='dataset'
+          )
+          print('✅ Catalog merged and synchronized atomically.')
           "
 
       - name: Report Success to Discord

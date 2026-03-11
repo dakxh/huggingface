@@ -543,7 +543,14 @@ jobs:
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true
 
             python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR" "$MEDIA_TYPE" "$TMDB_ID" "$SOURCE" "$RESOLUTION" "$VARIATION" || true
-          done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
+          done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) \
+            ! -iname "*NCOP*" \
+            ! -iname "*NCED*" \
+            ! -iname "*Trailer*" \
+            ! -iname "*Teaser*" \
+            ! -iname "*Credit*" \
+            ! -path "*/Trailers/*" \
+            ! -path "*/Other/*")
 
       - name: Upload Output to Hugging Face
         if: env.found == 'true'

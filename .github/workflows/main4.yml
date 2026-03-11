@@ -549,7 +549,14 @@ jobs:
             ! -iname "*Trailer*" \
             ! -iname "*Teaser*" \
             ! -iname "*Credit*" \
+            ! -iname "*S00*" \
+            ! -iname "*Special OP*" \
+            ! -iname "*Special ED*" \
             ! -path "*/Trailers/*" \
+            ! -path "*/Specials/*" \
+            ! -path "*/Extra/*" \
+            ! -path "*/Extras/*" \
+            ! -path "*/Special/*" \
             ! -path "*/Other/*")
 
       - name: Upload Output to Hugging Face

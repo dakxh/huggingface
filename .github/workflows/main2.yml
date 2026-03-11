@@ -1,4 +1,4 @@
-name: checkpoint - with cleanup
+name: Anime - cleanup
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  process-queue:
+  process-anime:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,214 +27,663 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - name: Find and Rename Text File
-        id: queue_manager
+      - name: Install Dependencies
         run: |
-          TXT_FILE=$(ls -1 *.txt 2>/dev/null | head -n 1)
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
+          pip install huggingface_hub guessit requests google-auth
+
+      - name: Fetch from Discord
+        id: discord_fetch
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          CHANNEL_ID: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
+        run: |
+          g++ discord_manager.cpp -o discord_manager -lcurl
           
-          if [ -z "$TXT_FILE" ]; then
-            echo "Queue is empty. No .txt files found."
+          OUTPUT=$(./discord_manager "$DISCORD_TOKEN" "$CHANNEL_ID" fetch)
+          MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
+          TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
+          
+          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
+            echo "❌ Queue is empty or API Error."
             echo "found=false" >> $GITHUB_ENV
             exit 0
           fi
           
-          echo "Target acquired: $TXT_FILE"
-          
-          BASE_NAME=$(basename "$TXT_FILE" .txt)
-          VIDEO_NAME=${BASE_NAME%.torrent}
-          TORRENT_FILE="${VIDEO_NAME}.torrent"
-          
-          mv "$TXT_FILE" "$TORRENT_FILE"
-          echo "Renamed locally to: $TORRENT_FILE"
-          
-          echo "TXT_FILE=$TXT_FILE" >> $GITHUB_ENV
-          echo "TORRENT_FILE=$TORRENT_FILE" >> $GITHUB_ENV
-          echo "VIDEO_NAME=$VIDEO_NAME" >> $GITHUB_ENV
+          echo "🌸 Anime Target acquired: $TARGET_LINK"
+          echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
+          echo "TARGET_LINK=$TARGET_LINK" >> $GITHUB_ENV
           echo "found=true" >> $GITHUB_ENV
 
-      - name: Install Dependencies
+      - name: Download Payload
         if: env.found == 'true'
-        run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2
-          pip install huggingface_hub
-
-      - name: Download Torrent
-        if: env.found == 'true'
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
         run: |
           mkdir -p workspace
-          echo "Downloading $TORRENT_FILE..."
-          aria2c --seed-time=0 "$TORRENT_FILE" -d workspace/
+          
+          if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
+            if [[ "$TARGET_LINK" == *\&at=* ]] || [[ "$TARGET_LINK" == *confirm=t* ]]; then
+              cd workspace && curl -# -L -OJ "$TARGET_LINK" && cd ..
+            else
+              cat << 'EOF' > gdrive_sa_dl.py
+          import os, sys, re, json, requests
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import Request
+          link = sys.argv[1]
+          sa_info = json.loads(os.environ.get('GCP_SA_JSON'))
+          creds = service_account.Credentials.from_service_account_info(sa_info, scopes=['https://www.googleapis.com/auth/drive.readonly'])
+          creds.refresh(Request())
+          headers = {'Authorization': f'Bearer {creds.token}'}
+          match = re.search(r'(id=|/d/|folders/)([a-zA-Z0-9_-]+)', link)
+          def download_file(fid, fname):
+              with requests.get(f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media", headers=headers, stream=True) as r:
+                  r.raise_for_status()
+                  with open(os.path.join("workspace", fname), 'wb') as f:
+                      for chunk in r.iter_content(chunk_size=1024*1024*10):
+                          if chunk: f.write(chunk)
+          def process_node(fid):
+              res = requests.get(f"https://www.googleapis.com/drive/v3/files/{fid}?fields=name,mimeType", headers=headers).json()
+              if res.get('mimeType') == 'application/vnd.google-apps.folder':
+                  children = requests.get(f"https://www.googleapis.com/drive/v3/files?q='{fid}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)", headers=headers).json().get('files', [])
+                  for child in children:
+                      if child['mimeType'] == 'application/vnd.google-apps.folder': process_node(child['id'])
+                      else: download_file(child['id'], child['name'])
+              else: download_file(fid, res['name'])
+          process_node(match.group(2))
+          EOF
+              python3 gdrive_sa_dl.py "$TARGET_LINK"
+            fi
+          elif [[ "$TARGET_LINK" == http* ]]; then
+            curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
+            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
+          else
+            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
+          fi
+          
+          while read -u 9 ZIP_FILE; do unzip -q -o "$ZIP_FILE" -d workspace/; rm "$ZIP_FILE"; done 9< <(find workspace -type f -name "*.zip")
 
-      - name: Process Video, Audio, and Subs into HLS
+      - name: Generate Anime Python Helpers
         if: env.found == 'true'
         run: |
-          # 1. Create the final staging directory structure
-          mkdir -p upload_dir/original upload_dir/stream
+          cat << 'EOF' > routing.py
+          import os, sys, re, requests, urllib.parse
+          from guessit import guessit
+
+          filename = os.path.basename(sys.argv[1])
+          clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
+          clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\](?=\.mkv|\.mp4)', '', clean_name)
+          g = guessit(clean_name)
+
+          search_query = g.get('title')
+          if not search_query: search_query = os.path.splitext(clean_name)[0]
+
+          tmdb_key = os.environ.get('TMDB_API_KEY', '')
+          media_type = 'series'
+          has_movie_keywords = any(k in filename.lower() for k in ['movie', 'gekijouban', 'film'])
+          if g.get('type') == 'movie' or has_movie_keywords:
+              media_type = 'movie'
+
+          tmdb_id = 0
+          final_title = search_query
+
+          if tmdb_key and search_query:
+              encoded_query = urllib.parse.quote(search_query)
+              yr_val = str(g.get('year', ''))
+              
+              movie_req = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={encoded_query}&primary_release_year={yr_val}" if yr_val else f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={encoded_query}"
+              tv_req = f"https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={encoded_query}&first_air_date_year={yr_val}" if yr_val else f"https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={encoded_query}"
+              
+              movie_res = requests.get(movie_req).json().get('results',[])
+              tv_res = requests.get(tv_req).json().get('results', [])
+              
+              best_m = movie_res[0] if movie_res else None
+              best_t = tv_res[0] if tv_res else None
+
+              if best_m and best_t:
+                  match = best_m if media_type == 'movie' else best_t
+              else:
+                  match = best_m or best_t
+                  if best_m: media_type = 'movie'
+                  if best_t: media_type = 'series'
+
+              if match:
+                  tmdb_id = match.get('id', 0)
+                  final_title = match.get('name') or match.get('title') or search_query
+
+          folder_title = re.sub(r'[^a-zA-Z0-9]+', '.', final_title).strip('.')
+
+          quality = str(g.get('screen_size', '1080p'))
+          is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
+          variation = f"{quality}.HDR" if is_hdr else f"{quality}.SDR"
           
-          # 2. Find the largest video, move it to the 'original' folder to save disk space
-          RAW_VIDEO_FILE=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec stat -c "%s %n" {} + | sort -nr | head -n 1 | cut -d' ' -f2-)
-          echo "Found original video: $RAW_VIDEO_FILE"
-          mv "$RAW_VIDEO_FILE" upload_dir/original/
+          # Source Normalizer
+          source = 'WEB-DL'
+          if any(k in filename.lower() for k in ['bd', 'blu-ray', 'bluray', 'bdrip', 'brrip']):
+              source = 'Bluray'
+              
+          if media_type == 'movie':
+              print(f"{folder_title}.{variation}|.|movie|{tmdb_id}|{source}|{quality}|{variation}")
+          else:
+              s, e = g.get('season', 1), g.get('episode', 1)
+              if not g.get('episode'):
+                  anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', clean_name)
+                  if anime_match: e = anime_match.group(1)
+                  
+              s_val = int(s[0] if isinstance(s, list) else s) if s else 1
+              e_val = int(e[0] if isinstance(e, list) else e) if e else 1
+              
+              # Notice base_dir no longer appends quality/variation for anime series to allow seamless upgrades
+              print(f"{folder_title}|Season.{s_val:02d}/Episode.{e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
+          EOF
+
+          cat << 'EOF' > metadata_builder.py
+          import os, json, requests, subprocess, sys, re, time, urllib.parse
+          from guessit import guessit
+
+          file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str, media_type, tmdb_id_str, source_str, resolution_str, variation_str = sys.argv[1:12]
+          available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
           
-          # 3. Update the target path for FFmpeg
-          VIDEO_FILE="upload_dir/original/$(basename "$RAW_VIDEO_FILE")"
-          echo "Processing from new location: $VIDEO_FILE..."
-
-          STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language,title -of csv=p=0 "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')
-
-          AUDIO_MAPS="-map 0:V:0"
-          VAR_STREAM_MAP="v:0,agroup:audio "
-          AUDIO_ENCODING=""
-          A_IDX=0
-          LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
-
-          while IFS=',' read -r index ctype lang title; do
-            if [[ "$ctype" == "audio" ]]; then
-              if [[ "$lang $title" =~ $LANG_REGEX ]]; then
-                echo "Mapping Audio $index: lang='${lang}', title='${title}'"
-                AUDIO_MAPS="$AUDIO_MAPS -map 0:$index"
-                VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "
-                
-                CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-                
-                if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
-                  echo "  -> Unplayable codec detected ($CODEC). Transcoding to Opus 512k VBR with safe channel mapping."
-                  AUDIO_ENCODING+=" -c:a:$A_IDX libopus -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=7.1|5.1|stereo "
-                else
-                  echo "  -> Web-safe codec detected ($CODEC). Retaining 100% original quality (copy)."
-                  AUDIO_ENCODING+=" -c:a:$A_IDX copy "
-                fi
-                
-                A_IDX=$((A_IDX + 1))
-              fi
-            fi
-          done <<< "$STREAMS"
-
-          if [[ "$A_IDX" -eq 0 ]]; then
-            echo "Fallback: No matching languages found. Using default audio."
-            AUDIO_MAPS="$AUDIO_MAPS -map 0:a:0"
-            VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "
-            
-            CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-            if [[ "$CODEC" =~ ^(ac3|eac3|dts|truehd)$ ]]; then
-              echo "  -> Fallback codec is $CODEC. Transcoding to Opus 512k VBR."
-              AUDIO_ENCODING=" -c:a:0 libopus -b:a:0 512k -filter:a:0 aformat=channel_layouts=7.1|5.1|stereo "
-            else
-              echo "  -> Fallback codec is $CODEC. Copying natively."
-              AUDIO_ENCODING=" -c:a:0 copy "
-            fi
-          fi
-
-          VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
-
-          echo "Running FFmpeg with native C-level reporting..."
-          export FFREPORT="file=ffmpeg_native_crash.log:level=32"
+          ass_files =[x.strip() for x in ass_str.split('|') if x.strip()]
+          fonts =[x.strip() for x in fonts_str.split('|') if x.strip()]
           
-          # Notice the output path is now upload_dir/stream/
-          if ! ffmpeg -fflags +genpts -i "$VIDEO_FILE" \
-            $AUDIO_MAPS \
-            -c:v copy $AUDIO_ENCODING \
-            -tag:v hvc1 \
-            -max_muxing_queue_size 9999 \
-            -f hls \
-            -hls_segment_type fmp4 \
-            -var_stream_map "$VAR_STREAM_MAP" \
-            -master_pl_name master.m3u8 \
-            -hls_time 10 \
-            -hls_list_size 0 \
-            upload_dir/stream/stream_%v.m3u8; then
-            
-            echo "❌ FFMPEG CRASHED! Dumping the native C-level error log below:"
-            echo "---------------------------------------------------"
-            cat ffmpeg_native_crash.log
-            echo "---------------------------------------------------"
-            exit 1
-          fi
-          echo "✅ FFmpeg conversion successful."
-
-          # HEVC 10-BIT BUG FIX (DYNAMIC)
-          if ! grep -q "stream_0.m3u8" upload_dir/stream/master.m3u8; then
-            echo "⚠️ HEVC Bug Detected: Injecting video stream manually with dynamic attributes..."
-            
-            BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
-            if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
-              SIZE=$(stat -c %s "$VIDEO_FILE")
-              DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
-              BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
-            fi
-            BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
-            
-            RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
-            [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
-            
-            printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,CODECS="hvc1.2.4.L153.B0,mp4a.40.2",AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" >> upload_dir/stream/master.m3u8
-          fi
-            
-          # SUBTITLE EXTRACTION & M3U8 INJECTION LOGIC
-          HAS_SUBS="false"
-          echo "" >> upload_dir/stream/master.m3u8
+          target_dir = base_dir if sub_dir == '.' else os.path.join(base_dir, sub_dir)
+          is_movie = (media_type == 'movie')
+          tmdb_id = int(tmdb_id_str)
           
-          while IFS=',' read -r index ctype lang title; do
-            if [[ "$ctype" == "subtitle" ]]; then
-              if [[ "$lang $title" =~ $LANG_REGEX ]]; then
-                echo "Extracting Subtitle $index: lang='${lang}', title='${title}'"
-                VTT_FILE="upload_dir/stream/subs_${index}_${lang:-und}.vtt"
-                
-                if ffmpeg -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
-                  if [ -s "$VTT_FILE" ]; then
-                    HAS_SUBS="true"
-                    CLEAN_NAME=$(echo "${title:-$lang}" | tr -cd 'a-zA-Z0-9 ()[]_-' | sed 's/^ *//;s/ *$//')
-                    [ -z "$CLEAN_NAME" ] && CLEAN_NAME="Sub_${index}"
-                    
-                    printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="%s",LANGUAGE="%s",URI="%s"\n' "$CLEAN_NAME" "${lang:-und}" "subs_${index}_${lang:-und}.vtt" >> upload_dir/stream/master.m3u8
-                  else
-                    echo "Subtitle $index is 0 bytes (Empty Track). Discarding."
-                    rm -f "$VTT_FILE"
+          HF_ANIME_REPO = os.environ.get('HF_ANIME_REPO', '')
+          tmdb_key = os.environ.get('TMDB_API_KEY')
+
+          base_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}'
+          manifest_url = f'{base_url}/master.m3u8'
+
+          filename = os.path.basename(file_path)
+          g = guessit(re.sub(r'^\[.*?\]\s*', '', filename))
+
+          ass_subs_final =[]
+          for a in ass_files:
+              try: lbl = a.split('_', 2)[-1].rsplit('.ass', 1)[0]
+              except: lbl = "Unknown Subtitle"
+              ass_subs_final.append({'url': f'{base_url}/{urllib.parse.quote(a)}', 'label': lbl})
+          
+          fonts_final =[f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts]
+
+          try:
+              cmd =['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
+              dur_seconds = float(subprocess.run(cmd, stdout=subprocess.PIPE, text=True).stdout.strip())
+          except: dur_seconds = 0.0
+          def format_dur(secs): h, m = int(secs//3600), int((secs%3600)//60); return f'{h}h{m}m' if h>0 else f'{m}m'
+
+          is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
+          size_str = f'{round(os.path.getsize(file_path)/(1024**3), 2)} GB'
+
+          # LOCAL SESSION CATALOG ISOLATION
+          catalog_path = 'hls_output/session_catalog.json'
+          try:
+              with open(catalog_path, 'r') as f: catalog = json.load(f)
+          except: catalog = []
+
+          if is_movie:
+              show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
+          else:
+              s_val = g.get('season', 1)
+              s_num = int(s_val[0] if isinstance(s_val, list) else s_val)
+              show_meta = {'id': tmdb_id, 'type': 'anime', 'title': '', 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'average_duration': '0m', 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
+
+          if os.path.exists(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json'):
+              with open(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json', 'r') as f: 
+                  prev = json.load(f)
+                  if is_movie: show_meta.update(prev)
+                  else:
+                      prev['_total_secs'] = prev.get('_total_secs', 0.0)
+                      prev['_ep_count'] = prev.get('_ep_count', 0)
+                      show_meta.update(prev)
+
+          if tmdb_key and tmdb_id != 0 and not show_meta.get('poster_url'):
+              if is_movie:
+                  try:
+                      res = requests.get(f'https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={tmdb_key}').json()
+                      if not res.get('status_code'):
+                          show_meta.update({
+                              'title': res.get('title', show_meta.get('title')),
+                              'movie_title': res.get('title', show_meta.get('title')),
+                              'overview': res.get('overview', ''),
+                              'rating': round(res.get('vote_average', 0.0), 1),
+                              'year': res.get('release_date', '')[:4] if res.get('release_date') else '',
+                              'poster_url': f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{res.get('poster_path', '')}" if res.get('poster_path') else '',
+                              'backdrop_url': f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{res.get('backdrop_path', '')}" if res.get('backdrop_path') else ''
+                          })
+                  except: pass
+              else:
+                  # TV Show fetching logic (Show Level first, then Season override)
+                  try:
+                      show_res = requests.get(f'https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={tmdb_key}').json()
+                      season_res = requests.get(f'https://api.themoviedb.org/3/tv/{tmdb_id}/season/{s_num}?api_key={tmdb_key}').json()
+                      if not show_res.get('status_code'):
+                          show_meta.update({
+                              'title': show_res.get('name', show_meta.get('title')),
+                              'overview': show_res.get('overview', ''),
+                              'rating': round(show_res.get('vote_average', 0.0), 1),
+                              'year': show_res.get('first_air_date', '')[:4] if show_res.get('first_air_date') else '',
+                              'poster_url': f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{show_res.get('poster_path', '')}" if show_res.get('poster_path') else '',
+                              'backdrop_url': f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{show_res.get('backdrop_path', '')}" if show_res.get('backdrop_path') else ''
+                          })
+                      # Override with Season specific data if available
+                      if not season_res.get('status_code'):
+                          if season_res.get('overview'): show_meta['overview'] = season_res['overview']
+                          if season_res.get('poster_path'): show_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{season_res['poster_path']}"
+                  except: pass
+              
+          if not show_meta.get('title'):
+              show_meta['title'] = base_dir.rsplit('.', 1)[0].replace('.', ' ').strip()
+              if is_movie: show_meta['movie_title'] = show_meta['title']
+
+          if not is_movie:
+              show_meta['_total_secs'] += dur_seconds; show_meta['_ep_count'] += 1;
+              calc_dur_str = format_dur(show_meta['_total_secs'] / max(show_meta['_ep_count'], 1))
+              show_meta['average_duration'] = calc_dur_str
+
+              e_val = g.get('episode', 1)
+              e_num = int(e_val[0] if isinstance(e_val, list) else e_val)
+
+              ep_name = f'Episode {e_num}'
+              if tmdb_key and show_meta['id'] != 0:
+                  try: ep_name = requests.get(f'https://api.themoviedb.org/3/tv/{show_meta["id"]}/season/{s_num}/episode/{e_num}?api_key={tmdb_key}').json().get('name', ep_name)
+                  except: pass
+
+              show_meta['episodes'] = [ep for ep in show_meta.get('episodes', []) if not (ep['season_number']==s_num and ep['episode_number']==e_num)]
+              show_meta['episodes'].append({'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'quality': resolution_str, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url})
+              show_meta['episodes'].sort(key=lambda x: (x['season_number'], x['episode_number']))
+              
+              with open(f'hls_output/{base_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
+              
+              ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': filename, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
+              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
+          else:
+              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
+
+          # Local Session Catalog Constructor
+          if is_movie:
+              existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == show_meta['title']), None)
+              if existing_idx is not None:
+                  if resolution_str not in catalog[existing_idx].setdefault('available_resolutions', []):
+                      catalog[existing_idx]['available_resolutions'].append(resolution_str)
+                      catalog[existing_idx]['available_resolutions'] = sorted(catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
+                  if variation_str not in catalog[existing_idx].setdefault('available_variations', []):
+                      catalog[existing_idx]['available_variations'].append(variation_str)
+                  if not isinstance(catalog[existing_idx].get('metadata_url'), dict):
+                      catalog[existing_idx]['metadata_url'] = {}
+                  catalog[existing_idx]['metadata_url'][variation_str] = f"https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}/metadata.json"
+              else:
+                  catalog.append({
+                      'id': show_meta['id'], 'type': 'movie', 'title': show_meta['title'], 'year': show_meta['year'],
+                      'available_resolutions': [resolution_str], 'available_variations': [variation_str],
+                      'date_added': int(time.time()),
+                      'metadata_url': {variation_str: f"https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}/metadata.json"},
+                      'poster_url': show_meta.get('poster_url', '')
+                  })
+          else:
+              existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'anime' and item.get('title') == show_meta['title']), None)
+              season_str = str(s_num)
+              season_metadata_url = f"https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(base_dir)}/metadata.json"
+              
+              if existing_idx is not None:
+                  if season_str not in catalog[existing_idx].setdefault('available_seasons', []):
+                      catalog[existing_idx]['available_seasons'].append(season_str)
+                      catalog[existing_idx]['available_seasons'] = sorted(catalog[existing_idx]['available_seasons'], key=int)
+                  if not isinstance(catalog[existing_idx].get('season_sources'), dict):
+                      catalog[existing_idx]['season_sources'] = {}
+                  catalog[existing_idx]['season_sources'][season_str] = source_str
+                  if not isinstance(catalog[existing_idx].get('season_metadata_urls'), dict):
+                      catalog[existing_idx]['season_metadata_urls'] = {}
+                  catalog[existing_idx]['season_metadata_urls'][season_str] = season_metadata_url
+              else:
+                  catalog.append({
+                      'id': show_meta['id'], 'type': 'anime', 'title': show_meta['title'], 'year': show_meta['year'],
+                      'date_added': int(time.time()), 'available_seasons': [season_str],
+                      'season_sources': {season_str: source_str}, 'season_metadata_urls': {season_str: season_metadata_url},
+                      'poster_url': show_meta.get('poster_url', '')
+                  })
+
+          with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
+          EOF
+
+      - name: Process Master Anime Loop
+        if: env.found == 'true'
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
+          HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
+        run: |
+          mkdir -p hls_output
+          
+          while read -u 9 VIDEO_FILE; do
+            echo "🎬 PROCESSING ANIME: $VIDEO_FILE"
+            
+            ROUTING=$(python3 routing.py "$VIDEO_FILE" || echo "Unknown.Anime|Season.01/Episode.01|series|0|WEB-DL|1080p|1080p.SDR")
+            BASE_DIR=$(echo "$ROUTING" | cut -d'|' -f1)
+            SUB_DIR=$(echo "$ROUTING" | cut -d'|' -f2)
+            MEDIA_TYPE=$(echo "$ROUTING" | cut -d'|' -f3)
+            TMDB_ID=$(echo "$ROUTING" | cut -d'|' -f4)
+            SOURCE=$(echo "$ROUTING" | cut -d'|' -f5)
+            RESOLUTION=$(echo "$ROUTING" | cut -d'|' -f6)
+            VARIATION=$(echo "$ROUTING" | cut -d'|' -f7)
+            
+            if [ "$SUB_DIR" == "." ]; then TARGET_DIR="$BASE_DIR"; else TARGET_DIR="$BASE_DIR/$SUB_DIR"; fi
+            
+            ORIG_TARGET_DIR="$TARGET_DIR"
+            COUNTER=2
+            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+              echo "⚠️ Collision detected! $TARGET_DIR already exists."
+              TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
+              COUNTER=$((COUNTER+1))
+            done
+            
+            mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
+
+            FONTS_STR=""
+            
+            # Universal Defaults Override Guarantee
+            mkdir -p "hls_output/$TARGET_DIR/fonts"
+            curl -sL "https://raw.githubusercontent.com/libass/JavascriptSubtitlesOctopus/refs/heads/master/assets/default.woff2" -o "hls_output/$TARGET_DIR/fonts/default.woff2" || true
+            FONTS_STR="default.woff2|"
+            
+            HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | grep -c -i "attachment" || echo "0")
+            if [ "$HAS_ATTACHMENTS" -gt 0 ]; then
+              mkdir -p temp_fonts && cd temp_fonts || exit
+              ffmpeg -nostdin -y -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1 || true
+              cd ..
+              
+              if [ "$(ls -A temp_fonts 2>/dev/null || true)" ]; then
+                mv temp_fonts/* "hls_output/$TARGET_DIR/fonts/" 2>/dev/null || true
+                for font in "hls_output/$TARGET_DIR/fonts"/*; do
+                  FBASE=$(basename "$font")
+                  if [ -f "$font" ] && [ "$FBASE" != "default.woff2" ]; then 
+                    FONTS_STR+="${FBASE}|"
                   fi
+                done
+              fi
+              rm -rf temp_fonts
+            fi
+
+            STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
+            DETECTED_ASS=""; DETECTED_AUDIO=""; AUDIO_MAPS="-map 0:V:0"; VAR_STREAM_MAP="v:0,agroup:audio "; AUDIO_ENCODING=""
+            A_IDX=0; STREAM_IDX=1; AUDIO_SED_CMDS=""
+            
+            HIGHEST_JPN_BITRATE=0; BEST_JPN_AUDIO_ID=""
+            HIGHEST_ANY_BITRATE=0; BEST_ANY_AUDIO_ID=""
+
+            while IFS=',' read -r index ctype lang; do
+              if [[ -z "$index" ]]; then continue; fi
+              
+              if [[ "$ctype" == "subtitle" ]]; then
+                SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null || true)
+                if [[ "$SUB_CODEC" =~ ^(ass|ssa|subrip|srt)$ ]]; then
+                  
+                  SUB_TITLE=$(ffprobe -v error -select_streams $index -show_entries stream_tags=title -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '\r\n' || true)
+                  
+                  case "${lang,,}" in
+                    en|eng|english) SUB_LANG="English" ;;
+                    hi|hin|hindi) SUB_LANG="Hindi" ;;
+                    te|tel|telugu) SUB_LANG="Telugu" ;;
+                    *) SUB_LANG="Skip" ;;
+                  esac
+                  
+                  if [ "$SUB_LANG" == "Skip" ]; then
+                    if echo "${SUB_TITLE,,}" | grep -E -q '(english|hindi|telugu)'; then
+                      [[ "${SUB_TITLE,,}" == *english* ]] && SUB_LANG="English"
+                      [[ "${SUB_TITLE,,}" == *hindi* ]] && SUB_LANG="Hindi"
+                      [[ "${SUB_TITLE,,}" == *telugu* ]] && SUB_LANG="Telugu"
+                    else
+                      continue
+                    fi
+                  fi
+                  
+                  CLEAN_TITLE=$(echo "$SUB_TITLE" | tr -cd 'a-zA-Z0-9 -()[]&!' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                  
+                  if [ -n "$CLEAN_TITLE" ]; then LABEL="${SUB_LANG} - ${CLEAN_TITLE}"
+                  else LABEL="${SUB_LANG}"
+                  fi
+                  
+                  SAFE_LABEL=$(echo "$LABEL" | tr -s ' ')
+                  ASS_BASENAME="subs_${index}_${SAFE_LABEL}.ass"
+                  
+                  ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
+                  
+                  if [ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
+                    DETECTED_ASS+="${ASS_BASENAME}|"
+                  fi
+                fi
+                
+              elif [[ "$ctype" == "audio" ]]; then
+                A_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+                
+                case "${lang,,}" in
+                  en|eng|english) DISPLAY_LANG="English" ;;
+                  hi|hin|hindi) DISPLAY_LANG="Hindi" ;;
+                  te|tel|telugu) DISPLAY_LANG="Telugu" ;;
+                  ja|jap|jpn|japan|japanese) DISPLAY_LANG="Japanese" ;;
+                  *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
+                esac
+
+                if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  "
+                  DISPLAY_BITRATE="512kbps"
+                  TRACK_BITRATE=512000
                 else
-                  echo "Failed to extract Subtitle $index."
+                  AUDIO_ENCODING+=" -c:a:$A_IDX copy "
+                  ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
+                  if [[ -z "$ORIG_BITRATE" || ! "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                      BPS=$(ffprobe -v error -select_streams $index -show_entries stream_tags=BPS -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
+                      if [[ -n "$BPS" && "$BPS" =~ ^[0-9]+$ ]]; then ORIG_BITRATE=$((BPS * 8)); fi
+                  fi
+                  if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                    DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"; TRACK_BITRATE=$ORIG_BITRATE
+                  else DISPLAY_BITRATE="Unknown"; TRACK_BITRATE=192000
+                  fi
+                fi
+                
+                TRACK_AUDIO_ID="audio_${STREAM_IDX}"
+                if [[ "${lang,,}" =~ ^(ja|jap|jpn|japan|japanese)$ ]]; then
+                    if [[ "$TRACK_BITRATE" -gt "$HIGHEST_JPN_BITRATE" ]]; then HIGHEST_JPN_BITRATE=$TRACK_BITRATE; BEST_JPN_AUDIO_ID=$TRACK_AUDIO_ID; fi
+                fi
+                if [[ "$TRACK_BITRATE" -gt "$HIGHEST_ANY_BITRATE" ]]; then HIGHEST_ANY_BITRATE=$TRACK_BITRATE; BEST_ANY_AUDIO_ID=$TRACK_AUDIO_ID; fi
+                
+                AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "; DETECTED_AUDIO+=" ${lang:-und}"
+                AUDIO_SED_CMDS+="s/NAME=\"audio_${STREAM_IDX}\"/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
+                A_IDX=$((A_IDX + 1)); STREAM_IDX=$((STREAM_IDX + 1))
+              fi
+            done <<< "$STREAMS"
+
+            if [[ "$A_IDX" -eq 0 ]]; then 
+              AUDIO_MAPS+=" -map 0:a:0"; DETECTED_AUDIO="und"
+              A_CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+              if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  "; DISPLAY_BITRATE="512kbps"
+              else AUDIO_ENCODING=" -c:a:0 copy "
+                ORIG_BITRATE=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
+                if [[ -z "$ORIG_BITRATE" || ! "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                    BPS=$(ffprobe -v error -select_streams a:0 -show_entries stream_tags=BPS -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
+                    if [[ -n "$BPS" && "$BPS" =~ ^[0-9]+$ ]]; then ORIG_BITRATE=$((BPS * 8)); fi
+                fi
+                if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
+                else DISPLAY_BITRATE="Unknown"; fi
+              fi
+              VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "; AUDIO_SED_CMDS+="s/NAME=\"audio_1\"/NAME=\"Unknown - ${DISPLAY_BITRATE}\"/g; "; BEST_ANY_AUDIO_ID="audio_1"
+            fi
+            VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
+
+            VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+            [[ "$VIDEO_CODEC" == "hevc" ]] && V_TAG="-tag:v hvc1" || V_TAG="-tag:v avc1"
+
+            ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
+              -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 -max_muxing_queue_size 9999 \
+              -f hls -hls_segment_type mpegts -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
+              -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
+              "hls_output/$TARGET_DIR/stream_%v.m3u8" || continue
+
+            if [[ -n "$BEST_JPN_AUDIO_ID" ]]; then DEFAULT_AUDIO_ID="$BEST_JPN_AUDIO_ID"; else DEFAULT_AUDIO_ID="$BEST_ANY_AUDIO_ID"; fi
+
+            sed -i '/TYPE=AUDIO/s/DEFAULT=YES/DEFAULT=NO/g' "hls_output/$TARGET_DIR/master.m3u8" || true
+            if [[ -n "$DEFAULT_AUDIO_ID" ]]; then
+                awk -v tgt="NAME=\"${DEFAULT_AUDIO_ID}\"" '{ if ($0 ~ /TYPE=AUDIO/ && $0 ~ tgt) { sub(/DEFAULT=NO/, "DEFAULT=YES", $0); }; print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_tmp.m3u8" && mv "hls_output/$TARGET_DIR/master_tmp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+            fi
+            if [ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true; fi
+            sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
+            
+            for m3u8_file in "hls_output/$TARGET_DIR"/stream_*.m3u8; do
+              stream_name=$(basename "$m3u8_file")
+              if ! grep -q "^$stream_name" "hls_output/$TARGET_DIR/master.m3u8"; then
+                if [[ "$stream_name" == "stream_0.m3u8" ]]; then
+                  BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                  if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
+                    SIZE=$(stat -c %s "$VIDEO_FILE")
+                    DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                    BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
+                  fi
+                  BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
+                  RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
+                  [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
+                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$RESOLUTION" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
+                else
+                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=128000,AUDIO="group_audio"\n%s\n' "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 fi
               fi
-            fi
-          done <<< "$STREAMS"
+            done
 
-          if [[ "$HAS_SUBS" == "true" ]]; then
-            echo "Binding subtitles to master video stream..."
-            sed -i '/RESOLUTION=/ s/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/' upload_dir/stream/master.m3u8
-          fi
+            HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/datasets/${HF_ANIME_REPO}/resolve/main/${TARGET_DIR}/', safe=':/'))")
+            find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true
 
-          # 4. THE HUGGING FACE REDIRECT FIX (Now routing strictly into the /stream/ folder)
-          echo "Fixing Hugging Face URL redirect bug..."
-          HF_BASE="https://huggingface.co/datasets/${{ secrets.HF_REPO }}/resolve/main/${VIDEO_NAME}/stream/"
-          find upload_dir/stream -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
-          echo "✅ All relative paths and embedded URIs converted to absolute URLs."
+            python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR" "$MEDIA_TYPE" "$TMDB_ID" "$SOURCE" "$RESOLUTION" "$VARIATION" || true
+          done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
 
       - name: Upload Output to Hugging Face
         if: env.found == 'true'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_REPO: ${{ secrets.HF_REPO }}
+          HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
+          HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
         run: |
           python -c "
           from huggingface_hub import HfApi
           import os
-          api = HfApi()
-          api.upload_folder(
-              folder_path='upload_dir',
-              path_in_repo=os.environ.get('VIDEO_NAME'),
-              repo_id=os.environ.get('HF_REPO'),
-              repo_type='dataset',
-              token=os.environ.get('HF_TOKEN')
-          )
+          api = HfApi(token=os.environ.get('HF_ANIME_TOKEN'))
+          api.upload_large_folder(folder_path='hls_output', repo_id=os.environ.get('HF_ANIME_REPO'), repo_type='dataset', ignore_patterns=['*.torrent', '*.zip', 'temp_*', 'session_catalog.json'])
           "
 
-      - name: Commit Deletion of Processed Torrent
+      - name: Atomic Cloud Catalog Sync
         if: env.found == 'true' && success()
+        env:
+          HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
+          HF_REPO: ${{ secrets.HF_ANIME_REPO }}
         run: |
-          echo "Pipeline successful. Removing original $TXT_FILE from the queue..."
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git rm "$TXT_FILE"
-          git commit -m "Auto-Queue: Processed and removed $TXT_FILE"
-          git push
+          python -c "
+          import os, json
+          from huggingface_hub import hf_hub_download, HfApi
+
+          repo = os.environ.get('HF_REPO')
+          token = os.environ.get('HF_TOKEN')
+          api = HfApi(token=token)
+
+          print('⚡ Initiating Atomic Catalog Sync...')
+
+          try:
+              dl_path = hf_hub_download(repo_id=repo, filename='global_catalog.json', repo_type='dataset', token=token, force_download=True)
+              with open(dl_path, 'r') as f:
+                  global_catalog = json.load(f)
+          except Exception:
+              global_catalog = []
+
+          try:
+              with open('hls_output/session_catalog.json', 'r') as f:
+                  session_catalog = json.load(f)
+          except Exception:
+              session_catalog = []
+
+          if not session_catalog:
+              print('⚠️ No session catalog found. Nothing to merge.')
+              exit(0)
+
+          for session_item in session_catalog:
+              if session_item.get('type') == 'anime':
+                  existing_idx = None
+                  for i, item in enumerate(global_catalog):
+                      if item.get('type') == 'anime' and item.get('title') == session_item['title']:
+                          existing_idx = i
+                          break
+                  if existing_idx is not None:
+                      # Deep Merge Anime
+                      if 'available_seasons' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_seasons'] = []
+                      if 'season_sources' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['season_sources'], dict):
+                          global_catalog[existing_idx]['season_sources'] = {}
+                      if 'season_metadata_urls' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['season_metadata_urls'], dict):
+                          global_catalog[existing_idx]['season_metadata_urls'] = {}
+
+                      for season_str in session_item.get('available_seasons', []):
+                          if season_str not in global_catalog[existing_idx]['available_seasons']:
+                              global_catalog[existing_idx]['available_seasons'].append(season_str)
+                      global_catalog[existing_idx]['available_seasons'] = sorted(global_catalog[existing_idx]['available_seasons'], key=int)
+                      
+                      if isinstance(session_item.get('season_sources'), dict):
+                          global_catalog[existing_idx]['season_sources'].update(session_item['season_sources'])
+                      if isinstance(session_item.get('season_metadata_urls'), dict):
+                          global_catalog[existing_idx]['season_metadata_urls'].update(session_item['season_metadata_urls'])
+                      
+                      global_catalog[existing_idx]['date_added'] = session_item['date_added']
+                  else:
+                      global_catalog.append(session_item)
+                      
+              elif session_item.get('type') == 'movie':
+                  existing_idx = None
+                  for i, item in enumerate(global_catalog):
+                      if item.get('type') == 'movie' and item.get('title') == session_item['title'] and item.get('year') == session_item['year']:
+                          existing_idx = i
+                          break
+                  if existing_idx is not None:
+                      # Deep Merge Movie
+                      if 'available_resolutions' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_resolutions'] = []
+                      if 'available_variations' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_variations'] = []
+                      if 'metadata_url' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['metadata_url'], dict):
+                          global_catalog[existing_idx]['metadata_url'] = {}
+                          
+                      for res in session_item.get('available_resolutions', []):
+                          if res not in global_catalog[existing_idx]['available_resolutions']:
+                              global_catalog[existing_idx]['available_resolutions'].append(res)
+                      global_catalog[existing_idx]['available_resolutions'] = sorted(global_catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
+                      
+                      for var in session_item.get('available_variations', []):
+                          if var not in global_catalog[existing_idx]['available_variations']:
+                              global_catalog[existing_idx]['available_variations'].append(var)
+                              
+                      if isinstance(session_item.get('metadata_url'), dict):
+                          global_catalog[existing_idx]['metadata_url'].update(session_item['metadata_url'])
+                      
+                      global_catalog[existing_idx]['date_added'] = session_item['date_added']
+                  else:
+                      global_catalog.append(session_item)
+
+          with open('latest_global_catalog.json', 'w') as f:
+              json.dump(global_catalog, f, indent=4)
+
+          api.upload_file(
+              path_or_fileobj='latest_global_catalog.json',
+              path_in_repo='global_catalog.json',
+              repo_id=repo,
+              repo_type='dataset'
+          )
+          print('✅ Catalog merged and synchronized atomically.')
+          "
+
+      - name: Report to Discord
+        if: always() && env.found == 'true'
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          QUEUE_CH: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
+          PING_CH: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            TOTAL_FILES=$(find hls_output -type f | wc -l)
+            ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
+            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Uploaded!** \n\`${TOTAL_FILES} files (.ts, .ass, fonts)\`"
+          else
+            PAYLOAD=$(jq -n --arg c "❌ **Pipeline Failed!** \n🔗[View Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" '{content: $c}')
+            curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CH/messages"
+          fi

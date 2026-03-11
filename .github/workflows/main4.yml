@@ -33,7 +33,7 @@ jobs:
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
           
-          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
+          if[ -z "$TARGET_LINK" ] ||[ "$MSG_ID" == "empty" ] ||[ "$MSG_ID" == "error" ]; then
             echo "❌ Queue is empty or API Error."
             echo "found=false" >> $GITHUB_ENV
             exit 0
@@ -104,7 +104,6 @@ jobs:
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\](?=\.mkv|\.mp4)', '', clean_name)
           g = guessit(clean_name)
 
-          # Strip seasons ("S3"), Year context safely by fetching precise title from Guestit mappings
           search_query = g.get('title')
           if not search_query: search_query = os.path.splitext(clean_name)[0]
 
@@ -117,7 +116,6 @@ jobs:
           tmdb_id = 0
           final_title = search_query
 
-          # Bypass Regex logic failures entirely and search cleanly TMDB APIs using native pure titles strings
           if tmdb_key and search_query:
               encoded_query = urllib.parse.quote(search_query)
               yr_val = str(g.get('year', ''))
@@ -142,7 +140,6 @@ jobs:
                   tmdb_id = match.get('id', 0)
                   final_title = match.get('name') or match.get('title') or search_query
 
-          # Replace all symbols cleanly for strict root namespace mappings
           folder_title = re.sub(r'[^a-zA-Z0-9]+', '.', final_title).strip('.')
 
           quality = str(g.get('screen_size', '1080p'))
@@ -167,10 +164,11 @@ jobs:
 
           file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str, media_type, tmdb_id_str = sys.argv[1:9]
           available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
-          ass_files =[x.strip() for x in ass_str.split() if x.strip()]
+          
+          # Notice split mappings decoupled precisely matching array logic strictly formatting smoothly
+          ass_files =[x.strip() for x in ass_str.split('|') if x.strip()]
           fonts =[x.strip() for x in fonts_str.split('|') if x.strip()]
           
-          # Target handles empty subdirectory maps effectively removing useless nodes like '/Movie/' entirely!
           target_dir = base_dir if sub_dir == '.' else os.path.join(base_dir, sub_dir)
           is_movie = (media_type == 'movie')
           tmdb_id = int(tmdb_id_str)
@@ -178,8 +176,21 @@ jobs:
           HF_ANIME_REPO = os.environ.get('HF_ANIME_REPO', '')
           tmdb_key = os.environ.get('TMDB_API_KEY')
 
+          base_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}'
+          manifest_url = f'{base_url}/master.m3u8'
+
           filename = os.path.basename(file_path)
           g = guessit(re.sub(r'^\[.*?\]\s*', '', filename))
+
+          # Converting ASS tracking directly converting raw mappings to explicitly typed dict objects for Web Players 
+          ass_subs_final =[]
+          for a in ass_files:
+              try:
+                  lbl = a.split('_', 2)[-1].rsplit('.ass', 1)[0]
+              except: lbl = "Unknown Subtitle"
+              ass_subs_final.append({'url': f'{base_url}/{urllib.parse.quote(a)}', 'label': lbl})
+          
+          fonts_final =[f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts]
 
           try:
               cmd =['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
@@ -200,21 +211,16 @@ jobs:
           is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
           size_str = f'{round(os.path.getsize(file_path)/(1024**3), 2)} GB'
 
-          manifest_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}/master.m3u8'
-          base_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}'
-
           catalog_path = 'hls_output/global_catalog.json'
           try:
               with open(catalog_path, 'r') as f: catalog = json.load(f)
           except: catalog =[]
 
-          # Unified output configuration mappings 
           if is_movie:
-              show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': 'WEB-DL', 'quality': str(g.get('screen_size', '1080p')), 'duration': format_dur(dur_seconds), 'size': size_str, 'IMAX': is_imax, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles':[f'{base_url}/{urllib.parse.quote(a)}' for a in ass_files], 'fonts':[f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts], 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
+              show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': 'WEB-DL', 'quality': str(g.get('screen_size', '1080p')), 'duration': format_dur(dur_seconds), 'size': size_str, 'IMAX': is_imax, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
           else:
               show_meta = {'id': tmdb_id, 'type': 'anime', 'title': '', 'year': '', 'rating': 0.0, 'source': 'WEB-DL', 'quality': str(g.get('screen_size', '1080p')), 'duration': '0m', 'average_duration': '0m', 'IMAX': is_imax, 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
 
-          # Load preserved state safely updating any internal counts tracking Series objects properly
           if os.path.exists(f'hls_output/{base_dir}/metadata.json'):
               with open(f'hls_output/{base_dir}/metadata.json', 'r') as f: 
                   prev = json.load(f)
@@ -224,7 +230,6 @@ jobs:
                       prev['_ep_count'] = prev.get('_ep_count', 0)
                       show_meta.update(prev)
 
-          # Master specific API Fetch to flawlessly sync completely bypassing any further searching algorithms! 
           if tmdb_key and tmdb_id != 0 and not show_meta.get('poster_url'):
               search_type = "movie" if is_movie else "tv"
               try:
@@ -266,11 +271,10 @@ jobs:
               show_meta['episodes'].append({'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'quality': show_meta['quality'], 'date_added': int(time.time()), 'hls_manifest_url': manifest_url})
               show_meta['episodes'].sort(key=lambda x: (x['season_number'], x['episode_number']))
 
-          # Drop metadata accurately maintaining exactly pure files for Single Movie Base
           with open(f'hls_output/{base_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
 
           if not is_movie:
-              ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': filename, 'quality': show_meta['quality'], 'duration': format_dur(dur_seconds), 'size': size_str, 'available_audio': available_audio, 'ass_subtitles':[f'{base_url}/{urllib.parse.quote(a)}' for a in ass_files], 'fonts':[f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts], 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
+              ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': filename, 'quality': show_meta['quality'], 'duration': format_dur(dur_seconds), 'size': size_str, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
 
           catalog =[item for item in catalog if item.get('type') != 'episode']
@@ -317,7 +321,7 @@ jobs:
             
             ORIG_TARGET_DIR="$TARGET_DIR"
             COUNTER=2
-            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+            while[ -d "hls_output/$TARGET_DIR" ] &&[ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
               echo "⚠️ Collision detected! $TARGET_DIR already exists."
               TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
               COUNTER=$((COUNTER+1))
@@ -326,6 +330,12 @@ jobs:
             mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
 
             FONTS_STR=""
+            
+            # Universal Defaults Override Guarantee: Inserts safety net layout seamlessly ensuring player never halts blindly 
+            mkdir -p "hls_output/$TARGET_DIR/fonts"
+            curl -sL "https://raw.githubusercontent.com/libass/JavascriptSubtitlesOctopus/refs/heads/master/assets/default.woff2" -o "hls_output/$TARGET_DIR/fonts/default.woff2" || true
+            FONTS_STR="default.woff2|"
+            
             HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | grep -c -i "attachment" || echo "0")
             if [ "$HAS_ATTACHMENTS" -gt 0 ]; then
               mkdir -p temp_fonts && cd temp_fonts || exit
@@ -333,10 +343,12 @@ jobs:
               cd ..
               
               if [ "$(ls -A temp_fonts 2>/dev/null || true)" ]; then
-                mkdir -p "hls_output/$TARGET_DIR/fonts"
                 mv temp_fonts/* "hls_output/$TARGET_DIR/fonts/" 2>/dev/null || true
                 for font in "hls_output/$TARGET_DIR/fonts"/*; do
-                  if [ -f "$font" ]; then FONTS_STR+="$(basename "$font")|"; fi
+                  FBASE=$(basename "$font")
+                  if [ -f "$font" ] &&[ "$FBASE" != "default.woff2" ]; then 
+                    FONTS_STR+="${FBASE}|"
+                  fi
                 done
               fi
               rm -rf temp_fonts
@@ -354,22 +366,45 @@ jobs:
               
               if [[ "$ctype" == "subtitle" ]]; then
                 SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null || true)
-                # Updated RegEx seamlessly handling SUBRIP tracks natively dropping onto the web properly mapped identically over into ASS extraction loop formatting conversions!
                 if [[ "$SUB_CODEC" =~ ^(ass|ssa|subrip|srt)$ ]]; then
+                  
+                  # Extract track Title directly (e.g. "Signs and Songs", "Forced", etc.)
+                  SUB_TITLE=$(ffprobe -v error -select_streams $index -show_entries stream_tags=title -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '\r\n' || true)
+                  
+                  # Hard restrict subtitle extracting formats keeping English, Hindi, Telugu only
                   case "${lang,,}" in
                     en|eng|english) SUB_LANG="English" ;;
                     hi|hin|hindi) SUB_LANG="Hindi" ;;
                     te|tel|telugu) SUB_LANG="Telugu" ;;
-                    ja|jap|jpn|japan|japanese) SUB_LANG="Japanese" ;;
-                    *) [ -n "$lang" ] && SUB_LANG="$(echo "$lang" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" || SUB_LANG="Unknown" ;;
+                    *) SUB_LANG="Skip" ;;
                   esac
-                  SAFE_SUB_NAME=$(echo "$SUB_LANG" | tr -cd 'a-zA-Z0-9')
-                  ASS_BASENAME="subs_${index}_${SAFE_SUB_NAME}.ass"
+                  
+                  # Catch un-tagged Language header natively restoring correctly from Title data mappings 
+                  if[ "$SUB_LANG" == "Skip" ]; then
+                    if echo "${SUB_TITLE,,}" | grep -E -q '(english|hindi|telugu)'; then
+                      [[ "${SUB_TITLE,,}" == *english* ]] && SUB_LANG="English"
+                      [[ "${SUB_TITLE,,}" == *hindi* ]] && SUB_LANG="Hindi"
+                      [[ "${SUB_TITLE,,}" == *telugu* ]] && SUB_LANG="Telugu"
+                    else
+                      continue
+                    fi
+                  fi
+                  
+                  # Aggressively format title strictly to prevent Linux/Json collision rendering UI properly. 
+                  CLEAN_TITLE=$(echo "$SUB_TITLE" | tr -cd 'a-zA-Z0-9 -()[]&!' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                  
+                  if[ -n "$CLEAN_TITLE" ]; then LABEL="${SUB_LANG} - ${CLEAN_TITLE}"
+                  else LABEL="${SUB_LANG}"
+                  fi
+                  
+                  # Squeeze extra accidental space safely writing purely safe strings correctly separated nicely 
+                  SAFE_LABEL=$(echo "$LABEL" | tr -s ' ')
+                  ASS_BASENAME="subs_${index}_${SAFE_LABEL}.ass"
                   
                   ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
                   
-                  if [ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
-                    DETECTED_ASS+=" ${ASS_BASENAME}"
+                  if[ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
+                    DETECTED_ASS+="${ASS_BASENAME}|"
                   fi
                 fi
                 
@@ -390,17 +425,14 @@ jobs:
                   TRACK_BITRATE=512000
                 else
                   AUDIO_ENCODING+=" -c:a:$A_IDX copy "
-                  
                   ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
                   if [[ -z "$ORIG_BITRATE" || ! "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
                       BPS=$(ffprobe -v error -select_streams $index -show_entries stream_tags=BPS -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
                       if [[ -n "$BPS" && "$BPS" =~ ^[0-9]+$ ]]; then ORIG_BITRATE=$((BPS * 8)); fi
                   fi
-                  
                   if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
                     DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"; TRACK_BITRATE=$ORIG_BITRATE
-                  else
-                    DISPLAY_BITRATE="Unknown"; TRACK_BITRATE=192000
+                  else DISPLAY_BITRATE="Unknown"; TRACK_BITRATE=192000
                   fi
                 fi
                 
@@ -408,9 +440,7 @@ jobs:
                 if [[ "${lang,,}" =~ ^(ja|jap|jpn|japan|japanese)$ ]]; then
                     if [[ "$TRACK_BITRATE" -gt "$HIGHEST_JPN_BITRATE" ]]; then HIGHEST_JPN_BITRATE=$TRACK_BITRATE; BEST_JPN_AUDIO_ID=$TRACK_AUDIO_ID; fi
                 fi
-                if [[ "$TRACK_BITRATE" -gt "$HIGHEST_ANY_BITRATE" ]]; then
-                    HIGHEST_ANY_BITRATE=$TRACK_BITRATE; BEST_ANY_AUDIO_ID=$TRACK_AUDIO_ID
-                fi
+                if [[ "$TRACK_BITRATE" -gt "$HIGHEST_ANY_BITRATE" ]]; then HIGHEST_ANY_BITRATE=$TRACK_BITRATE; BEST_ANY_AUDIO_ID=$TRACK_AUDIO_ID; fi
                 
                 AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und} "; DETECTED_AUDIO+=" ${lang:-und}"
                 AUDIO_SED_CMDS+="s/NAME=\"audio_${STREAM_IDX}\"/NAME=\"${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
@@ -420,23 +450,17 @@ jobs:
 
             if [[ "$A_IDX" -eq 0 ]]; then 
               AUDIO_MAPS+=" -map 0:a:0"; DETECTED_AUDIO="und"
-              
               A_CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
-              if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  ";
-                DISPLAY_BITRATE="512kbps"
-              else
-                AUDIO_ENCODING=" -c:a:0 copy "
+              if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  "; DISPLAY_BITRATE="512kbps"
+              else AUDIO_ENCODING=" -c:a:0 copy "
                 ORIG_BITRATE=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
                 if [[ -z "$ORIG_BITRATE" || ! "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
                     BPS=$(ffprobe -v error -select_streams a:0 -show_entries stream_tags=BPS -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
                     if [[ -n "$BPS" && "$BPS" =~ ^[0-9]+$ ]]; then ORIG_BITRATE=$((BPS * 8)); fi
                 fi
                 if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
-                else DISPLAY_BITRATE="Unknown"
-                fi
+                else DISPLAY_BITRATE="Unknown"; fi
               fi
-              
               VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "; AUDIO_SED_CMDS+="s/NAME=\"audio_1\"/NAME=\"Unknown - ${DISPLAY_BITRATE}\"/g; "; BEST_ANY_AUDIO_ID="audio_1"
             fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
@@ -456,7 +480,7 @@ jobs:
             if [[ -n "$DEFAULT_AUDIO_ID" ]]; then
                 awk -v tgt="NAME=\"${DEFAULT_AUDIO_ID}\"" '{ if ($0 ~ /TYPE=AUDIO/ && $0 ~ tgt) { sub(/DEFAULT=NO/, "DEFAULT=YES", $0); }; print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_tmp.m3u8" && mv "hls_output/$TARGET_DIR/master_tmp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
             fi
-            if [ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true; fi
+            if[ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true; fi
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
             
             for m3u8_file in "hls_output/$TARGET_DIR"/stream_*.m3u8; do
@@ -482,6 +506,7 @@ jobs:
             HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/datasets/${HF_ANIME_REPO}/resolve/main/${TARGET_DIR}/', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true
 
+            # Piping exact payload layout natively completely decoupled spaces
             python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR" "$MEDIA_TYPE" "$TMDB_ID" || true
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
 
@@ -505,11 +530,11 @@ jobs:
           QUEUE_CH: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
           PING_CH: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          if [ "${{ job.status }}" == "success" ]; then
+          if[ "${{ job.status }}" == "success" ]; then
             TOTAL_FILES=$(find hls_output -type f | wc -l)
             ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
             ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Uploaded!** \n\`${TOTAL_FILES} files (.ts, .ass, fonts)\`"
           else
-            PAYLOAD=$(jq -n --arg c "❌ **Pipeline Failed!** \n🔗 [View Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" '{content: $c}')
+            PAYLOAD=$(jq -n --arg c "❌ **Pipeline Failed!** \n🔗[View Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" '{content: $c}')
             curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CH/messages"
           fi

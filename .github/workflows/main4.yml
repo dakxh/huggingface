@@ -235,7 +235,7 @@ jobs:
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
         run: |
           mkdir -p hls_output
           
@@ -244,7 +244,7 @@ jobs:
           import os, json, shutil
           from huggingface_hub import hf_hub_download
           repo = os.environ.get('HF_ANIME_REPO')
-          token = os.environ.get('HF_TOKEN')
+          token = os.environ.get('HF_ANIME_TOKEN')
           catalog_path = 'hls_output/global_catalog.json'
           try:
               dl_path = hf_hub_download(repo_id=repo, filename='global_catalog.json', repo_type='dataset', token=token)
@@ -427,13 +427,13 @@ jobs:
       - name: Upload to Hugging Face
         if: env.found == 'true'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
           HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
         run: |
           python -c "
           from huggingface_hub import HfApi
           import os
-          api = HfApi(token=os.environ.get('HF_TOKEN'))
+          api = HfApi(token=os.environ.get('HF_ANIME_TOKEN'))
           api.upload_large_folder(folder_path='hls_output', repo_id=os.environ.get('HF_ANIME_REPO'), repo_type='dataset', ignore_patterns=['*.torrent', '*.zip', 'temp_*'])
           "
 

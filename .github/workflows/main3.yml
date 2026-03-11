@@ -607,7 +607,7 @@ jobs:
                     AUDIO_MAPS+=" -map 0:$index"
                     VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
                     if [[ "$IS_STEREO" -eq 0 ]]; then
-                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11 "
+                      AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,,dynaudnorm=f=150:g=15:m=40.0 "
                     else
                       AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo "
                     fi

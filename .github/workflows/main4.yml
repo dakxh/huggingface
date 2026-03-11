@@ -96,83 +96,138 @@ jobs:
         if: env.found == 'true'
         run: |
           cat << 'EOF' > routing.py
-          import os, sys, re, requests, urllib.parse, difflib
+          import os, sys, re
           from guessit import guessit
-
           filename = os.path.basename(sys.argv[1])
-          
-          # 1. Strip Release Groups, Extensions, and CRCs
           clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\](?=\.mkv|\.mp4)', '', clean_name)
-          name_no_ext = os.path.splitext(clean_name)[0]
+          g = guessit(clean_name)
+          title = str(g.get('title', '')).strip()
+          
+          # SMART TITLE FALLBACK
+          year_match = re.search(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', clean_name)
+          if year_match:
+              raw_prefix = clean_name[:year_match.start()]
+              regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
+              if len(regex_title) > len(title):
+                  title = regex_title
 
-          # 2. STRICT FULL-TITLE EXTRACTION
-          # This captures everything leading up to a structural tag, guaranteeing
-          # we keep "Reze Arc" attached to "Chainsaw Man".
-          # Boundaries: " - 01", " - V1", "(2025)", "[1080p]", "1080p"
-          title_match = re.match(
-              r'^(.*?)(?:(?:\s-\s\d{1,4})|(?:\s-\s?[Vv]\d+)|(?:\(\d{4}\))|(?:\[.*?\])|(?:1080p|720p|4k|2160p))', 
-              name_no_ext, re.IGNORECASE
-          )
-          search_query = title_match.group(1).strip(' -_') if title_match else name_no_ext.strip(' -_')
-
-          # 3. DUAL TMDB API ARBITRATION (TV vs Movie Conflict Resolution)
-          tmdb_key = os.environ.get('TMDB_API_KEY', '')
-          media_type = 'series'  # Fallback default
+          if not title:
+              m = re.match(r'^(.*?)\s*-\s*(\d+(?:\.\d+)?)', clean_name)
+              if m: title = m.group(1)
+          title = re.sub(r'[^a-zA-Z0-9.\-]', '', title.title().replace(' ', '.')) or 'Unknown.Anime'
           
-          if tmdb_key and search_query:
-              encoded_query = urllib.parse.quote(search_query)
-              
-              # Fetch from both ends concurrently
-              movie_res = requests.get(f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={encoded_query}").json()
-              tv_res = requests.get(f"https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={encoded_query}").json()
-              
-              m_results = movie_res.get('results', [])
-              t_results = tv_res.get('results',[])
-              
-              # String match comparison algorithm (ratio between 0.0 and 1.0)
-              def similarity(a, b): 
-                  return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
-              
-              # Extract top title and compute proximity
-              m_score = similarity(search_query, m_results[0].get('title', '')) if m_results else 0
-              t_score = similarity(search_query, t_results[0].get('name', '')) if t_results else 0
-              
-              # Fail-safe filename override
-              has_movie_keywords = any(k in filename.lower() for k in['movie', 'gekijouban', 'film'])
-              
-              # ARBITRATION LOGIC
-              # Whichever gets the closest text match wins. 
-              # Prevents a TV show ("Chainsaw Man") from stealing a query for "Chainsaw Man Reze Arc".
-              if m_score > t_score and m_score > 0.4:
-                  media_type = 'movie'
-              elif t_score > m_score and t_score > 0.4:
-                  media_type = 'series'
-              elif has_movie_keywords:
-                  media_type = 'movie'
-          
-          # 4. PATH GENERATION
-          folder_title = re.sub(r'[^a-zA-Z0-9.\-]', '', search_query.title().replace(' ', '.')) or 'Unknown.Anime'
-          
-          g = guessit(filename)
           quality = str(g.get('screen_size', '1080p'))
-          if bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower())):
+          
+          # ⚡ HDR ROUTING CHECK ⚡
+          is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
+          if is_hdr:
               quality += '.HDR'
               
-          if media_type == 'movie':
-              print(f"{folder_title}.{quality}|Movie")
+          s, e = g.get('season'), g.get('episode')
+          if not e:
+              anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', clean_name)
+              if anime_match: e = anime_match.group(1)
+          s_val = int(s[0] if isinstance(s, list) else s) if s else 1
+          e_val = int(e[0] if isinstance(e, list) else e) if e else 1
+          print(f"{title}.{quality}|Season.{s_val:02d}/Episode.{e_val:02d}")
+          EOF
+
+          cat << 'EOF' > metadata_builder.py
+          import os, json, requests, subprocess, sys, re, time, urllib.parse
+          from guessit import guessit
+          
+          file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str = sys.argv[1:7]
+          available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
+          ass_files = [x.strip() for x in ass_str.split() if x.strip()]
+          fonts = [x.strip() for x in fonts_str.split('|') if x.strip()]
+          target_dir = os.path.join(base_dir, sub_dir)
+          HF_ANIME_REPO = os.environ.get('HF_ANIME_REPO', '')
+          tmdb_key = os.environ.get('TMDB_API_KEY')
+          
+          filename = os.path.basename(file_path)
+          clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
+          clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\]', '', clean_name)
+          g = guessit(clean_name)
+          
+          title = str(g.get('title', '')).strip()
+          year_match = re.search(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', clean_name)
+          if year_match:
+              raw_prefix = clean_name[:year_match.start()]
+              regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
+              if len(regex_title) > len(title): title = regex_title
+          if not title:
+              m = re.match(r'^(.*?)\s*-\s*(\d+(?:\.\d+)?)', clean_name)
+              if m: title = m.group(1)
+          if not title: title = 'Unknown Anime'
+
+          try:
+              cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
+              dur_seconds = float(subprocess.run(cmd, stdout=subprocess.PIPE, text=True).stdout.strip())
+          except: dur_seconds = 0.0
+          def format_dur(secs): h, m = int(secs//3600), int((secs%3600)//60); return f'{h}h{m}m' if h>0 else f'{m}m'
+          
+          is_imax = False
+          if 'imax' in filename.lower(): is_imax = True
           else:
-              s = g.get('season', 1)
-              e = g.get('episode', 1)
-              if not g.get('episode'):
-                  # Fallback regex for episode parsing if guessit fails
-                  anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', clean_name)
-                  if anime_match: e = anime_match.group(1)
-                  
-              s_val = int(s[0] if isinstance(s, list) else s) if s else 1
-              e_val = int(e[0] if isinstance(e, list) else e) if e else 1
-              
-              print(f"{folder_title}.{quality}|Season.{s_val:02d}/Episode.{e_val:02d}")
+              try:
+                  cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file_path]
+                  res = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
+                  w, h = map(float, res.stdout.strip().split('x'))
+                  if (1.40 <= w/h <= 1.45) or (1.85 <= w/h <= 1.95): is_imax = True
+              except: pass
+          
+          is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
+          size_str = f'{round(os.path.getsize(file_path)/(1024**3), 2)} GB'
+
+          s_val, e_val = g.get('season', 1), g.get('episode', 1)
+          if not g.get('episode'):
+              am = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', clean_name)
+              if am: e_val = int(am.group(1))
+          s_num, e_num = int(s_val[0] if isinstance(s_val, list) else s_val), int(e_val[0] if isinstance(e_val, list) else e_val)
+
+          manifest_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}/master.m3u8'
+          base_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}'
+          
+          # Initialize or fetch catalog locally
+          catalog_path = 'hls_output/global_catalog.json'
+          try:
+              with open(catalog_path, 'r') as f: catalog = json.load(f)
+          except: catalog = []
+          
+          show_meta = {'id': 0, 'type': 'anime', 'title': title, 'year': '', 'rating': 0.0, 'source': 'WEB-DL', 'quality': str(g.get('screen_size', '1080p')), 'duration': '0m', 'IMAX': is_imax, 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes': []}
+          if os.path.exists(f'hls_output/{base_dir}/metadata.json'):
+              with open(f'hls_output/{base_dir}/metadata.json', 'r') as f: show_meta.update(json.load(f))
+          
+          show_meta['_total_secs'] += dur_seconds; show_meta['_ep_count'] += 1; show_meta['duration'] = format_dur(show_meta['_total_secs']/show_meta['_ep_count'])
+          
+          if tmdb_key and show_meta['id'] == 0:
+              try:
+                  res = requests.get(f'https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={title}').json()
+                  if not res.get('results'): res = requests.get(f"https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={re.sub(r'(?i)\\b(season|part|cour)\\s*\\d+\\b', '', title).strip()}").json()
+                  if res.get('results'):
+                      m = res['results'][0]
+                      show_meta.update({'id': m.get('id', 0), 'title': m.get('name', title), 'overview': m.get('overview', ''), 'rating': round(m.get('vote_average', 0.0), 1), 'year': m.get('first_air_date', '')[:4], 'poster_url': f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{m.get('poster_path', '')}", 'backdrop_url': f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{m.get('backdrop_path', '')}"})
+              except: pass
+          
+          ep_name = f'Episode {e_num}'
+          if tmdb_key and show_meta['id'] != 0:
+              try: ep_name = requests.get(f'https://api.themoviedb.org/3/tv/{show_meta["id"]}/season/{s_num}/episode/{e_num}?api_key={tmdb_key}').json().get('name', ep_name)
+              except: pass
+
+          show_meta['episodes'] = [ep for ep in show_meta.get('episodes', []) if not (ep['season_number']==s_num and ep['episode_number']==e_num)]
+          show_meta['episodes'].append({'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'quality': show_meta['quality'], 'date_added': int(time.time()), 'hls_manifest_url': manifest_url})
+          show_meta['episodes'].sort(key=lambda x: (x['season_number'], x['episode_number']))
+          with open(f'hls_output/{base_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
+
+          ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': filename, 'quality': show_meta['quality'], 'duration': format_dur(dur_seconds), 'size': size_str, 'available_audio': available_audio, 'ass_subtitles': [f'{base_url}/{urllib.parse.quote(a)}' for a in ass_files], 'fonts': [f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts], 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
+          with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
+          
+          # Append to Global Catalog cleanly
+          catalog = [item for item in catalog if item.get('type') != 'episode']
+          catalog = [item for item in catalog if not (item.get('type') == 'anime' and item.get('title') == show_meta['title'])]
+          catalog.append({'id': show_meta['id'], 'type': 'anime', 'title': show_meta['title'], 'year': show_meta['year'], 'quality': show_meta['quality'], 'date_added': int(time.time()), 'series_metadata_url': f"https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(base_dir)}/metadata.json", 'poster_url': show_meta.get('poster_url', '')})
+          with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
           EOF
 
       - name: Process Master Anime Loop
@@ -180,7 +235,7 @@ jobs:
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
-          HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p hls_output
           
@@ -189,7 +244,7 @@ jobs:
           import os, json, shutil
           from huggingface_hub import hf_hub_download
           repo = os.environ.get('HF_ANIME_REPO')
-          token = os.environ.get('HF_ANIME_TOKEN')
+          token = os.environ.get('HF_TOKEN')
           catalog_path = 'hls_output/global_catalog.json'
           try:
               dl_path = hf_hub_download(repo_id=repo, filename='global_catalog.json', repo_type='dataset', token=token)
@@ -372,13 +427,13 @@ jobs:
       - name: Upload to Hugging Face
         if: env.found == 'true'
         env:
-          HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_ANIME_REPO: ${{ secrets.HF_ANIME_REPO }}
         run: |
           python -c "
           from huggingface_hub import HfApi
           import os
-          api = HfApi(token=os.environ.get('HF_ANIME_TOKEN'))
+          api = HfApi(token=os.environ.get('HF_TOKEN'))
           api.upload_large_folder(folder_path='hls_output', repo_id=os.environ.get('HF_ANIME_REPO'), repo_type='dataset', ignore_patterns=['*.torrent', '*.zip', 'temp_*'])
           "
 

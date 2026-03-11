@@ -33,7 +33,7 @@ jobs:
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
           
-          if[ -z "$TARGET_LINK" ] ||[ "$MSG_ID" == "empty" ] ||[ "$MSG_ID" == "error" ]; then
+          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
             echo "❌ Queue is empty or API Error."
             echo "found=false" >> $GITHUB_ENV
             exit 0
@@ -321,7 +321,7 @@ jobs:
             
             ORIG_TARGET_DIR="$TARGET_DIR"
             COUNTER=2
-            while[ -d "hls_output/$TARGET_DIR" ] &&[ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+            while[ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
               echo "⚠️ Collision detected! $TARGET_DIR already exists."
               TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
               COUNTER=$((COUNTER+1))
@@ -346,7 +346,7 @@ jobs:
                 mv temp_fonts/* "hls_output/$TARGET_DIR/fonts/" 2>/dev/null || true
                 for font in "hls_output/$TARGET_DIR/fonts"/*; do
                   FBASE=$(basename "$font")
-                  if [ -f "$font" ] &&[ "$FBASE" != "default.woff2" ]; then 
+                  if [ -f "$font" ] && [ "$FBASE" != "default.woff2" ]; then 
                     FONTS_STR+="${FBASE}|"
                   fi
                 done
@@ -380,7 +380,7 @@ jobs:
                   esac
                   
                   # Catch un-tagged Language header natively restoring correctly from Title data mappings 
-                  if[ "$SUB_LANG" == "Skip" ]; then
+                  if [ "$SUB_LANG" == "Skip" ]; then
                     if echo "${SUB_TITLE,,}" | grep -E -q '(english|hindi|telugu)'; then
                       [[ "${SUB_TITLE,,}" == *english* ]] && SUB_LANG="English"
                       [[ "${SUB_TITLE,,}" == *hindi* ]] && SUB_LANG="Hindi"
@@ -393,7 +393,7 @@ jobs:
                   # Aggressively format title strictly to prevent Linux/Json collision rendering UI properly. 
                   CLEAN_TITLE=$(echo "$SUB_TITLE" | tr -cd 'a-zA-Z0-9 -()[]&!' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
                   
-                  if[ -n "$CLEAN_TITLE" ]; then LABEL="${SUB_LANG} - ${CLEAN_TITLE}"
+                  if [ -n "$CLEAN_TITLE" ]; then LABEL="${SUB_LANG} - ${CLEAN_TITLE}"
                   else LABEL="${SUB_LANG}"
                   fi
                   
@@ -403,7 +403,7 @@ jobs:
                   
                   ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
                   
-                  if[ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
+                  if [ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
                     DETECTED_ASS+="${ASS_BASENAME}|"
                   fi
                 fi
@@ -480,7 +480,7 @@ jobs:
             if [[ -n "$DEFAULT_AUDIO_ID" ]]; then
                 awk -v tgt="NAME=\"${DEFAULT_AUDIO_ID}\"" '{ if ($0 ~ /TYPE=AUDIO/ && $0 ~ tgt) { sub(/DEFAULT=NO/, "DEFAULT=YES", $0); }; print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_tmp.m3u8" && mv "hls_output/$TARGET_DIR/master_tmp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
             fi
-            if[ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true; fi
+            if [ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true; fi
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
             
             for m3u8_file in "hls_output/$TARGET_DIR"/stream_*.m3u8; do
@@ -530,7 +530,7 @@ jobs:
           QUEUE_CH: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
           PING_CH: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          if[ "${{ job.status }}" == "success" ]; then
+          if [ "${{ job.status }}" == "success" ]; then
             TOTAL_FILES=$(find hls_output -type f | wc -l)
             ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
             ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Uploaded!** \n\`${TOTAL_FILES} files (.ts, .ass, fonts)\`"

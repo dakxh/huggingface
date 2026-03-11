@@ -655,7 +655,7 @@ jobs:
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
                 if [[ "$IS_STEREO" -eq 0 ]]; then
                         # Surround: Safely isolate and boost the Center (Dialogue) channel by 180%, followed by a safety limiter
-                        AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,loudnorm=I=-12:TP=-1.5:LRA=13 "
+                        AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1,loudnorm=I=-16:TP=-1.5:LRA=11 "
                 else
                         # Stereo: Compress the loud action scenes, then heavily boost the whole track by 2.5x
                         AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11 "

@@ -333,7 +333,7 @@ jobs:
 
                 # ⚡ Transcode FLAC, OPUS, and unplayable Surround codecs safely
                 if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a "aformat=channel_layouts=5.1|stereo,pan=5.1|FL=FL|FR=FR|FC=1.7*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:LRA=11:TP=-1.5,alimiter=limit=-0.5dB"
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a 'aformat=channel_layouts=5.1|stereo,pan=5.1|FL=FL|FR=FR|FC=1.7*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:LRA=11:TP=-1.5,alimiter=limit=-0.5dB' "
                   DISPLAY_BITRATE="512kbps"
                 else
                   AUDIO_ENCODING+=" -c:a:$A_IDX copy "
@@ -363,7 +363,7 @@ jobs:
               
               A_CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
               if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a "aformat=channel_layouts=5.1|stereo,pan=5.1|FL=FL|FR=FR|FC=1.7*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:LRA=11:TP=-1.5,alimiter=limit=-0.5dB"
+                AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a 'aformat=channel_layouts=5.1|stereo,pan=5.1|FL=FL|FR=FR|FC=1.7*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:LRA=11:TP=-1.5,alimiter=limit=-0.5dB' "
                 DISPLAY_BITRATE="512kbps"
               else
                 AUDIO_ENCODING=" -c:a:0 copy "

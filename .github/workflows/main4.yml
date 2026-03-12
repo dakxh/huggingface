@@ -35,7 +35,7 @@ jobs:
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
           
-          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] ||[ "$MSG_ID" == "error" ]; then
+          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
             echo "❌ Queue is empty or API Error."
             echo "found=false" >> $GITHUB_ENV
             exit 0
@@ -383,7 +383,7 @@ jobs:
                 mv temp_fonts/* "hls_output/$TARGET_DIR/fonts/" 2>/dev/null || true
                 for font in "hls_output/$TARGET_DIR/fonts"/*; do
                   FBASE=$(basename "$font")
-                  if [ -f "$font" ] &&[ "$FBASE" != "default.woff2" ]; then 
+                  if [ -f "$font" ] && [ "$FBASE" != "default.woff2" ]; then 
                     FONTS_STR+="${FBASE}|"
                   fi
                 done
@@ -426,7 +426,7 @@ jobs:
                   
                   CLEAN_TITLE=$(echo "$SUB_TITLE" | tr -cd 'a-zA-Z0-9 -()[]&!' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
                   
-                  if[ -n "$CLEAN_TITLE" ]; then LABEL="${SUB_LANG} - ${CLEAN_TITLE}"
+                  if [ -n "$CLEAN_TITLE" ]; then LABEL="${SUB_LANG} - ${CLEAN_TITLE}"
                   else LABEL="${SUB_LANG}"
                   fi
                   

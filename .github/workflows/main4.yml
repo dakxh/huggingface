@@ -359,7 +359,7 @@ jobs:
             
             ORIG_TARGET_DIR="$TARGET_DIR"
             COUNTER=2
-            while[ -d "hls_output/$TARGET_DIR" ] &&[ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
               echo "⚠️ Collision detected! $TARGET_DIR already exists."
               TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
               COUNTER=$((COUNTER+1))
@@ -379,7 +379,7 @@ jobs:
               ffmpeg -nostdin -y -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1 || true
               cd ..
               
-              if[ "$(ls -A temp_fonts 2>/dev/null || true)" ]; then
+              if [ "$(ls -A temp_fonts 2>/dev/null || true)" ]; then
                 mv temp_fonts/* "hls_output/$TARGET_DIR/fonts/" 2>/dev/null || true
                 for font in "hls_output/$TARGET_DIR/fonts"/*; do
                   FBASE=$(basename "$font")
@@ -692,7 +692,7 @@ jobs:
           QUEUE_CH: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
           PING_CH: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          if[ "${{ job.status }}" == "success" ]; then
+          if [ "${{ job.status }}" == "success" ]; then
             TOTAL_FILES=$(find hls_output -type f | wc -l)
             ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
             ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .ass, fonts)\` synced via CDN."

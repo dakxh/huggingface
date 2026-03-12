@@ -424,7 +424,8 @@ jobs:
                     fi
                   fi
                   
-                  CLEAN_TITLE=$(echo "$SUB_TITLE" | tr -cd 'a-zA-Z0-9 -()[]&!' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                  # Strip [Tags], keep allowed chars, and trim lingering hyphens/spaces
+                  CLEAN_TITLE=$(echo "$SUB_TITLE" | sed -E 's/\[[^]]*\]//g' | tr -cd 'a-zA-Z0-9 -()&!' | tr -s ' ' | sed -e 's/^[[:space:]-]*//' -e 's/[[:space:]-]*$//')
                   
                   if [ -n "$CLEAN_TITLE" ]; then LABEL="${SUB_LANG} - ${CLEAN_TITLE}"
                   else LABEL="${SUB_LANG}"
@@ -460,7 +461,7 @@ jobs:
                   ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
                   if [[ -z "$ORIG_BITRATE" || ! "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
                       BPS=$(ffprobe -v error -select_streams $index -show_entries stream_tags=BPS -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
-                      if [[ -n "$BPS" && "$BPS" =~ ^[0-9]+$ ]]; then ORIG_BITRATE=$((BPS * 8)); fi
+                      if [[ -n "$BPS" && "$BPS" =~ ^[0-9]+$ ]]; then ORIG_BITRATE=$BPS; fi
                   fi
                   if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
                     DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"; TRACK_BITRATE=$ORIG_BITRATE
@@ -488,7 +489,7 @@ jobs:
                 ORIG_BITRATE=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
                 if [[ -z "$ORIG_BITRATE" || ! "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
                     BPS=$(ffprobe -v error -select_streams a:0 -show_entries stream_tags=BPS -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
-                    if [[ -n "$BPS" && "$BPS" =~ ^[0-9]+$ ]]; then ORIG_BITRATE=$((BPS * 8)); fi
+                    if [[ -n "$BPS" && "$BPS" =~ ^[0-9]+$ ]]; then ORIG_BITRATE=$BPS; fi
                 fi
                 if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
                 else DISPLAY_BITRATE="Unknown"; fi
@@ -515,6 +516,9 @@ jobs:
             if [ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true; fi
             sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
             
+            # ⚡ Purge ffmpeg's default STREAM-INF block so we can cleanly recreate it
+            awk '/^#EXT-X-STREAM-INF/ { getline n; next } { print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_clean.m3u8" && mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+            
             for m3u8_file in "hls_output/$TARGET_DIR"/stream_*.m3u8; do
               stream_name=$(basename "$m3u8_file")
               if ! grep -q "^$stream_name" "hls_output/$TARGET_DIR/master.m3u8"; then
@@ -530,7 +534,7 @@ jobs:
                   [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
                   printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$RESOLUTION" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 else
-                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=128000,AUDIO="group_audio"\n%s\n' "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
+                  printf '\n#EXT-X-STREAM-INF:AUDIO="group_audio"\n%s\n' "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 fi
               fi
             done

@@ -565,6 +565,9 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
           HF_ANIME_BUCKET: ${{ secrets.HF_ANIME_BUCKET }}
         run: |
+          # ⚡ BULLETPROOF FIX: Explicitly inject the local bin path into this specific shell ⚡
+          export PATH="$HOME/.local/bin:$PATH"
+          
           echo '🚀 Authenticating Hugging Face CLI...'
           huggingface-cli login --token $HF_TOKEN
           

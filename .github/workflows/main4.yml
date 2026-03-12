@@ -110,6 +110,8 @@ jobs:
           if not search_query: search_query = os.path.splitext(clean_name)[0]
 
           tmdb_key = os.environ.get('TMDB_API_KEY', '')
+          tmdb_key_2 = os.environ.get('TMDB_API_KEY_2', '')
+          
           media_type = 'series'
           has_movie_keywords = any(k in filename.lower() for k in ['movie', 'gekijouban', 'film'])
           if g.get('type') == 'movie' or has_movie_keywords:
@@ -118,15 +120,26 @@ jobs:
           tmdb_id = 0
           final_title = search_query
 
-          if tmdb_key and search_query:
+          def fetch_tmdb(endpoint, params):
+              for key in [tmdb_key, tmdb_key_2]:
+                  if not key: continue
+                  try:
+                      res = requests.get(f"https://api.themoviedb.org/3{endpoint}?api_key={key}&{params}", timeout=5)
+                      data = res.json()
+                      if res.status_code == 200 and not data.get('status_code'):
+                          return data
+                  except: pass
+              return {}
+
+          if search_query and (tmdb_key or tmdb_key_2):
               encoded_query = urllib.parse.quote(search_query)
               yr_val = str(g.get('year', ''))
               
-              movie_req = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={encoded_query}&primary_release_year={yr_val}" if yr_val else f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={encoded_query}"
-              tv_req = f"https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={encoded_query}&first_air_date_year={yr_val}" if yr_val else f"https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={encoded_query}"
+              movie_params = f"query={encoded_query}&primary_release_year={yr_val}" if yr_val else f"query={encoded_query}"
+              tv_params = f"query={encoded_query}&first_air_date_year={yr_val}" if yr_val else f"query={encoded_query}"
               
-              movie_res = requests.get(movie_req).json().get('results',[])
-              tv_res = requests.get(tv_req).json().get('results', [])
+              movie_res = fetch_tmdb('/search/movie', movie_params).get('results',[])
+              tv_res = fetch_tmdb('/search/tv', tv_params).get('results', [])
               
               best_m = movie_res[0] if movie_res else None
               best_t = tv_res[0] if tv_res else None
@@ -181,7 +194,8 @@ jobs:
           tmdb_id = int(tmdb_id_str)
           
           HF_ANIME_BUCKET = os.environ.get('HF_ANIME_BUCKET', '')
-          tmdb_key = os.environ.get('TMDB_API_KEY')
+          tmdb_key = os.environ.get('TMDB_API_KEY', '')
+          tmdb_key_2 = os.environ.get('TMDB_API_KEY_2', '')
 
           base_url = f'https://huggingface.co/buckets/{HF_ANIME_BUCKET}/{urllib.parse.quote(target_dir)}'
           manifest_url = f'{base_url}/master.m3u8'
@@ -227,38 +241,45 @@ jobs:
                       prev['_ep_count'] = prev.get('_ep_count', 0)
                       show_meta.update(prev)
 
-          if tmdb_key and tmdb_id != 0 and not show_meta.get('poster_url'):
+          def fetch_tmdb(endpoint):
+              for key in [tmdb_key, tmdb_key_2]:
+                  if not key: continue
+                  try:
+                      res = requests.get(f"https://api.themoviedb.org/3{endpoint}?api_key={key}", timeout=5)
+                      data = res.json()
+                      if res.status_code == 200 and not data.get('status_code'):
+                          return data
+                  except: pass
+              return {}
+
+          if (tmdb_key or tmdb_key_2) and tmdb_id != 0 and not show_meta.get('poster_url'):
               if is_movie:
-                  try:
-                      res = requests.get(f'https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={tmdb_key}').json()
-                      if not res.get('status_code'):
-                          show_meta.update({
-                              'title': res.get('title', show_meta.get('title')),
-                              'movie_title': res.get('title', show_meta.get('title')),
-                              'overview': res.get('overview', ''),
-                              'rating': round(res.get('vote_average', 0.0), 1),
-                              'year': res.get('release_date', '')[:4] if res.get('release_date') else '',
-                              'poster_url': f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{res.get('poster_path', '')}" if res.get('poster_path') else '',
-                              'backdrop_url': f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{res.get('backdrop_path', '')}" if res.get('backdrop_path') else ''
-                          })
-                  except: pass
+                  res = fetch_tmdb(f'/movie/{tmdb_id}')
+                  if res:
+                      show_meta.update({
+                          'title': res.get('title', show_meta.get('title')),
+                          'movie_title': res.get('title', show_meta.get('title')),
+                          'overview': res.get('overview', ''),
+                          'rating': round(res.get('vote_average', 0.0), 1),
+                          'year': res.get('release_date', '')[:4] if res.get('release_date') else '',
+                          'poster_url': f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{res.get('poster_path', '')}" if res.get('poster_path') else '',
+                          'backdrop_url': f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{res.get('backdrop_path', '')}" if res.get('backdrop_path') else ''
+                      })
               else:
-                  try:
-                      show_res = requests.get(f'https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={tmdb_key}').json()
-                      season_res = requests.get(f'https://api.themoviedb.org/3/tv/{tmdb_id}/season/{s_num}?api_key={tmdb_key}').json()
-                      if not show_res.get('status_code'):
-                          show_meta.update({
-                              'title': show_res.get('name', show_meta.get('title')),
-                              'overview': show_res.get('overview', ''),
-                              'rating': round(show_res.get('vote_average', 0.0), 1),
-                              'year': show_res.get('first_air_date', '')[:4] if show_res.get('first_air_date') else '',
-                              'poster_url': f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{show_res.get('poster_path', '')}" if show_res.get('poster_path') else '',
-                              'backdrop_url': f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{show_res.get('backdrop_path', '')}" if show_res.get('backdrop_path') else ''
-                          })
-                      if not season_res.get('status_code'):
-                          if season_res.get('overview'): show_meta['overview'] = season_res['overview']
-                          if season_res.get('poster_path'): show_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{season_res['poster_path']}"
-                  except: pass
+                  show_res = fetch_tmdb(f'/tv/{tmdb_id}')
+                  season_res = fetch_tmdb(f'/tv/{tmdb_id}/season/{s_num}')
+                  if show_res:
+                      show_meta.update({
+                          'title': show_res.get('name', show_meta.get('title')),
+                          'overview': show_res.get('overview', ''),
+                          'rating': round(show_res.get('vote_average', 0.0), 1),
+                          'year': show_res.get('first_air_date', '')[:4] if show_res.get('first_air_date') else '',
+                          'poster_url': f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{show_res.get('poster_path', '')}" if show_res.get('poster_path') else '',
+                          'backdrop_url': f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{show_res.get('backdrop_path', '')}" if show_res.get('backdrop_path') else ''
+                      })
+                  if season_res:
+                      if season_res.get('overview'): show_meta['overview'] = season_res['overview']
+                      if season_res.get('poster_path'): show_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{season_res['poster_path']}"
               
           if not show_meta.get('title'):
               show_meta['title'] = base_dir.rsplit('.', 1)[0].replace('.', ' ').strip()
@@ -273,9 +294,10 @@ jobs:
               e_num = int(e_val[0] if isinstance(e_val, list) else e_val)
 
               ep_name = f'Episode {e_num}'
-              if tmdb_key and show_meta['id'] != 0:
-                  try: ep_name = requests.get(f'https://api.themoviedb.org/3/tv/{show_meta["id"]}/season/{s_num}/episode/{e_num}?api_key={tmdb_key}').json().get('name', ep_name)
-                  except: pass
+              if (tmdb_key or tmdb_key_2) and show_meta['id'] != 0:
+                  ep_res = fetch_tmdb(f'/tv/{show_meta["id"]}/season/{s_num}/episode/{e_num}')
+                  if ep_res and ep_res.get('name'):
+                      ep_name = ep_res['name']
 
               show_meta['episodes'] =[ep for ep in show_meta.get('episodes', []) if not (ep['season_number']==s_num and ep['episode_number']==e_num)]
               show_meta['episodes'].append({'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'quality': resolution_str, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url})
@@ -338,6 +360,7 @@ jobs:
         if: env.found == 'true'
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TMDB_API_KEY_2: ${{ secrets.TMDB_API_KEY_2 }}
           HF_ANIME_BUCKET: ${{ secrets.HF_ANIME_BUCKET }}
           HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
         run: |

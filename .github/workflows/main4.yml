@@ -96,8 +96,17 @@ jobs:
         if: env.found == 'true'
         run: |
           cat << 'EOF' > routing.py
-          import os, sys, re, requests, urllib.parse
+          import os, sys, re, urllib.parse
+          import requests
+          from requests.adapters import HTTPAdapter
+          from urllib3.util.retry import Retry
           from guessit import guessit
+
+          # Setup resilient requests session
+          session = requests.Session()
+          retries = Retry(total=5, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+          session.mount('http://', HTTPAdapter(max_retries=retries))
+          session.mount('https://', HTTPAdapter(max_retries=retries))
 
           filename = os.path.basename(sys.argv[1])
           clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
@@ -123,8 +132,15 @@ jobs:
               movie_req = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={encoded_query}&primary_release_year={yr_val}" if yr_val else f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={encoded_query}"
               tv_req = f"https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={encoded_query}&first_air_date_year={yr_val}" if yr_val else f"https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={encoded_query}"
               
-              movie_res = requests.get(movie_req).json().get('results',[])
-              tv_res = requests.get(tv_req).json().get('results', [])
+              movie_res = []
+              tv_res = []
+              
+              # Wrap API calls in try-except to prevent crashes if TMDB goes down
+              try:
+                  movie_res = session.get(movie_req, timeout=10).json().get('results',[])
+                  tv_res = session.get(tv_req, timeout=10).json().get('results', [])
+              except Exception as e:
+                  pass # Fallback to guessit parsing if API completely fails
               
               best_m = movie_res[0] if movie_res else None
               best_t = tv_res[0] if tv_res else None
@@ -164,177 +180,6 @@ jobs:
               
               # Notice base_dir no longer appends quality/variation for anime series to allow seamless upgrades
               print(f"{folder_title}|Season.{s_val:02d}/Episode.{e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
-          EOF
-
-          cat << 'EOF' > metadata_builder.py
-          import os, json, requests, subprocess, sys, re, time, urllib.parse
-          from guessit import guessit
-
-          file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str, media_type, tmdb_id_str, source_str, resolution_str, variation_str = sys.argv[1:12]
-          available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
-          
-          ass_files =[x.strip() for x in ass_str.split('|') if x.strip()]
-          fonts =[x.strip() for x in fonts_str.split('|') if x.strip()]
-          
-          target_dir = base_dir if sub_dir == '.' else os.path.join(base_dir, sub_dir)
-          is_movie = (media_type == 'movie')
-          tmdb_id = int(tmdb_id_str)
-          
-          HF_ANIME_REPO = os.environ.get('HF_ANIME_REPO', '')
-          tmdb_key = os.environ.get('TMDB_API_KEY')
-
-          base_url = f'https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}'
-          manifest_url = f'{base_url}/master.m3u8'
-
-          filename = os.path.basename(file_path)
-          g = guessit(re.sub(r'^\[.*?\]\s*', '', filename))
-
-          ass_subs_final =[]
-          for a in ass_files:
-              try: lbl = a.split('_', 2)[-1].rsplit('.ass', 1)[0]
-              except: lbl = "Unknown Subtitle"
-              ass_subs_final.append({'url': f'{base_url}/{urllib.parse.quote(a)}', 'label': lbl})
-          
-          fonts_final =[f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts]
-
-          try:
-              cmd =['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
-              dur_seconds = float(subprocess.run(cmd, stdout=subprocess.PIPE, text=True).stdout.strip())
-          except: dur_seconds = 0.0
-          def format_dur(secs): h, m = int(secs//3600), int((secs%3600)//60); return f'{h}h{m}m' if h>0 else f'{m}m'
-
-          is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
-          size_str = f'{round(os.path.getsize(file_path)/(1024**3), 2)} GB'
-
-          # LOCAL SESSION CATALOG ISOLATION
-          catalog_path = 'hls_output/session_catalog.json'
-          try:
-              with open(catalog_path, 'r') as f: catalog = json.load(f)
-          except: catalog = []
-
-          if is_movie:
-              show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
-          else:
-              s_val = g.get('season', 1)
-              s_num = int(s_val[0] if isinstance(s_val, list) else s_val)
-              show_meta = {'id': tmdb_id, 'type': 'anime', 'title': '', 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'average_duration': '0m', 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
-
-          if os.path.exists(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json'):
-              with open(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json', 'r') as f: 
-                  prev = json.load(f)
-                  if is_movie: show_meta.update(prev)
-                  else:
-                      prev['_total_secs'] = prev.get('_total_secs', 0.0)
-                      prev['_ep_count'] = prev.get('_ep_count', 0)
-                      show_meta.update(prev)
-
-          if tmdb_key and tmdb_id != 0 and not show_meta.get('poster_url'):
-              if is_movie:
-                  try:
-                      res = requests.get(f'https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={tmdb_key}').json()
-                      if not res.get('status_code'):
-                          show_meta.update({
-                              'title': res.get('title', show_meta.get('title')),
-                              'movie_title': res.get('title', show_meta.get('title')),
-                              'overview': res.get('overview', ''),
-                              'rating': round(res.get('vote_average', 0.0), 1),
-                              'year': res.get('release_date', '')[:4] if res.get('release_date') else '',
-                              'poster_url': f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{res.get('poster_path', '')}" if res.get('poster_path') else '',
-                              'backdrop_url': f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{res.get('backdrop_path', '')}" if res.get('backdrop_path') else ''
-                          })
-                  except: pass
-              else:
-                  # TV Show fetching logic (Show Level first, then Season override)
-                  try:
-                      show_res = requests.get(f'https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={tmdb_key}').json()
-                      season_res = requests.get(f'https://api.themoviedb.org/3/tv/{tmdb_id}/season/{s_num}?api_key={tmdb_key}').json()
-                      if not show_res.get('status_code'):
-                          show_meta.update({
-                              'title': show_res.get('name', show_meta.get('title')),
-                              'overview': show_res.get('overview', ''),
-                              'rating': round(show_res.get('vote_average', 0.0), 1),
-                              'year': show_res.get('first_air_date', '')[:4] if show_res.get('first_air_date') else '',
-                              'poster_url': f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{show_res.get('poster_path', '')}" if show_res.get('poster_path') else '',
-                              'backdrop_url': f"https://image.tmdb.org/t/p/w1280_and_h720_multi_faces{show_res.get('backdrop_path', '')}" if show_res.get('backdrop_path') else ''
-                          })
-                      # Override with Season specific data if available
-                      if not season_res.get('status_code'):
-                          if season_res.get('overview'): show_meta['overview'] = season_res['overview']
-                          if season_res.get('poster_path'): show_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{season_res['poster_path']}"
-                  except: pass
-              
-          if not show_meta.get('title'):
-              show_meta['title'] = base_dir.rsplit('.', 1)[0].replace('.', ' ').strip()
-              if is_movie: show_meta['movie_title'] = show_meta['title']
-
-          if not is_movie:
-              show_meta['_total_secs'] += dur_seconds; show_meta['_ep_count'] += 1;
-              calc_dur_str = format_dur(show_meta['_total_secs'] / max(show_meta['_ep_count'], 1))
-              show_meta['average_duration'] = calc_dur_str
-
-              e_val = g.get('episode', 1)
-              e_num = int(e_val[0] if isinstance(e_val, list) else e_val)
-
-              ep_name = f'Episode {e_num}'
-              if tmdb_key and show_meta['id'] != 0:
-                  try: ep_name = requests.get(f'https://api.themoviedb.org/3/tv/{show_meta["id"]}/season/{s_num}/episode/{e_num}?api_key={tmdb_key}').json().get('name', ep_name)
-                  except: pass
-
-              show_meta['episodes'] = [ep for ep in show_meta.get('episodes', []) if not (ep['season_number']==s_num and ep['episode_number']==e_num)]
-              show_meta['episodes'].append({'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'quality': resolution_str, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url})
-              show_meta['episodes'].sort(key=lambda x: (x['season_number'], x['episode_number']))
-              
-              with open(f'hls_output/{base_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
-              
-              ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': filename, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
-              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
-          else:
-              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
-
-          # Local Session Catalog Constructor
-          if is_movie:
-              existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == show_meta['title']), None)
-              if existing_idx is not None:
-                  if resolution_str not in catalog[existing_idx].setdefault('available_resolutions', []):
-                      catalog[existing_idx]['available_resolutions'].append(resolution_str)
-                      catalog[existing_idx]['available_resolutions'] = sorted(catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
-                  if variation_str not in catalog[existing_idx].setdefault('available_variations', []):
-                      catalog[existing_idx]['available_variations'].append(variation_str)
-                  if not isinstance(catalog[existing_idx].get('metadata_url'), dict):
-                      catalog[existing_idx]['metadata_url'] = {}
-                  catalog[existing_idx]['metadata_url'][variation_str] = f"https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}/metadata.json"
-              else:
-                  catalog.append({
-                      'id': show_meta['id'], 'type': 'movie', 'title': show_meta['title'], 'year': show_meta['year'],
-                      'available_resolutions': [resolution_str], 'available_variations': [variation_str],
-                      'date_added': int(time.time()),
-                      'metadata_url': {variation_str: f"https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(target_dir)}/metadata.json"},
-                      'poster_url': show_meta.get('poster_url', '')
-                  })
-          else:
-              existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'anime' and item.get('title') == show_meta['title']), None)
-              season_str = str(s_num)
-              season_metadata_url = f"https://huggingface.co/datasets/{HF_ANIME_REPO}/resolve/main/{urllib.parse.quote(base_dir)}/metadata.json"
-              
-              if existing_idx is not None:
-                  if season_str not in catalog[existing_idx].setdefault('available_seasons', []):
-                      catalog[existing_idx]['available_seasons'].append(season_str)
-                      catalog[existing_idx]['available_seasons'] = sorted(catalog[existing_idx]['available_seasons'], key=int)
-                  if not isinstance(catalog[existing_idx].get('season_sources'), dict):
-                      catalog[existing_idx]['season_sources'] = {}
-                  catalog[existing_idx]['season_sources'][season_str] = source_str
-                  if not isinstance(catalog[existing_idx].get('season_metadata_urls'), dict):
-                      catalog[existing_idx]['season_metadata_urls'] = {}
-                  catalog[existing_idx]['season_metadata_urls'][season_str] = season_metadata_url
-              else:
-                  catalog.append({
-                      'id': show_meta['id'], 'type': 'anime', 'title': show_meta['title'], 'year': show_meta['year'],
-                      'date_added': int(time.time()), 'available_seasons': [season_str],
-                      'season_sources': {season_str: source_str}, 'season_metadata_urls': {season_str: season_metadata_url},
-                      'poster_url': show_meta.get('poster_url', '')
-                  })
-
-          with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
           EOF
 
       - name: Process Master Anime Loop

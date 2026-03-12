@@ -20,6 +20,9 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
           pip install -U "huggingface_hub[cli]" guessit requests google-auth
+          
+          # ⚡ FIX: Inject the local pip binary directory into the runner's PATH
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Fetch from Discord
         id: discord_fetch

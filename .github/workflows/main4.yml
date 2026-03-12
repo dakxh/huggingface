@@ -514,10 +514,13 @@ jobs:
                 awk -v tgt="NAME=\"${DEFAULT_AUDIO_ID}\"" '{ if ($0 ~ /TYPE=AUDIO/ && $0 ~ tgt) { sub(/DEFAULT=NO/, "DEFAULT=YES", $0); }; print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_tmp.m3u8" && mv "hls_output/$TARGET_DIR/master_tmp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
             fi
             if [ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true; fi
-            sed -i -E 's/,CODECS="[^"]*"//g' "hls_output/$TARGET_DIR/master.m3u8" || true
             
             # ⚡ Purge ffmpeg's default STREAM-INF block so we can cleanly recreate it
             awk '/^#EXT-X-STREAM-INF/ { getline n; next } { print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_clean.m3u8" && mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+            
+            # ⚡ Identify correct codec for manifest injection
+            if [[ "$VIDEO_CODEC" == "hevc" ]]; then VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
+            else VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""; fi
             
             for m3u8_file in "hls_output/$TARGET_DIR"/stream_*.m3u8; do
               stream_name=$(basename "$m3u8_file")
@@ -532,7 +535,7 @@ jobs:
                   BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
                   RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
                   [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
-                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$RESOLUTION" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
+                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$RESOLUTION" "$VIDEO_TAG_STR" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 else
                   printf '\n#EXT-X-STREAM-INF:AUDIO="group_audio"\n%s\n' "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 fi

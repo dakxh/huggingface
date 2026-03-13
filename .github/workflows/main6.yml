@@ -100,7 +100,6 @@ jobs:
           cat << 'EOF' > routing.py
           import os, sys, re, requests, urllib.parse
           from guessit import guessit
-
           filename = os.path.basename(sys.argv[1])
           clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\](?=\.mkv|\.mp4)', '', clean_name)

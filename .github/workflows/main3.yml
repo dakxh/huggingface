@@ -178,9 +178,14 @@ jobs:
           if not title: title = 'Unknown_Title'
           title = title.title().replace(' ', '.')
           
-          resolution = str(g.get('screen_size', '1080p'))
-          if '4k' in resolution.lower() or '2160' in resolution.lower(): resolution = '2160p'
-          elif '1080' in resolution.lower(): resolution = '1080p'
+          quality_raw = str(g.get('screen_size', '')).lower()
+          if '4k' in quality_raw or '2160' in quality_raw or '3840' in quality_raw:
+              resolution = '2160p'
+          elif '720' in quality_raw or '1280' in quality_raw:
+              resolution = '720p'
+          else:
+              # Defaults 1920x1080, 1920x800, 1920x960, and anything unknown to 1080p
+              resolution = '1080p'
 
           is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
           dynamic_range = 'HDR' if is_hdr else 'SDR'
@@ -535,13 +540,18 @@ jobs:
               BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
             fi
             BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
-            RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
-            [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
+            
+            # Isolate the variable so it doesn't overwrite the global catalog's quality tag
+            MANIFEST_RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
+            
+            # Strip newlines/extra corrupted characters to guarantee strict WxH format
+            MANIFEST_RESOLUTION=$(echo "$MANIFEST_RESOLUTION" | head -n 1 | grep -oE '^[0-9]+x[0-9]+' || echo "1920x1080")
+            [ -z "$MANIFEST_RESOLUTION" ] && MANIFEST_RESOLUTION="1920x1080"
             
             if [[ "$VIDEO_CODEC" == "hevc" ]]; then VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
             else VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""; fi
             
-            VIDEO_MANIFEST_INJECTION=$(printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$RESOLUTION" "$VIDEO_TAG_STR")
+            VIDEO_MANIFEST_INJECTION=$(printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION" "$VIDEO_TAG_STR")
             mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
             
             HAS_SUBS="false"; echo "" >> "hls_output/$TARGET_DIR/master.m3u8"

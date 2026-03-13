@@ -35,7 +35,7 @@ jobs:
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
           
-          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
+          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] ||[ "$MSG_ID" == "error" ]; then
             echo "❌ Queue is empty or API Error."
             echo "found=false" >> $GITHUB_ENV
             exit 0
@@ -100,6 +100,7 @@ jobs:
           cat << 'EOF' > routing.py
           import os, sys, re, requests, urllib.parse
           from guessit import guessit
+
           filename = os.path.basename(sys.argv[1])
           clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\](?=\.mkv|\.mp4)', '', clean_name)
@@ -112,15 +113,35 @@ jobs:
           tmdb_key_2 = os.environ.get('TMDB_API_KEY_2', '')
           
           media_type = 'series'
-          has_movie_keywords = any(k in filename.lower() for k in ['movie', 'gekijouban', 'film'])
-          if g.get('type') == 'movie' or has_movie_keywords:
+          s_guess = g.get('season', 1)
+          e_guess = g.get('episode')
+
+          # Detect classic absolute anime episode numbers bypassing GuessIT's Season/Ep splitting errors
+          anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v0?)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', clean_name)
+          
+          if anime_match:
+              abs_ep = anime_match.group(1)
+              if not e_guess:
+                  e_guess = abs_ep
+              else:
+                  # Fix NLP hallucination where episode '163' splits into Season 1, Episode 63
+                  s_str = str(s_guess) if s_guess else ""
+                  if (s_str + f"{int(e_guess):02d}" == abs_ep) or (s_str + str(e_guess) == abs_ep):
+                      s_guess = 1
+                      e_guess = abs_ep
+              g['type'] = 'episode'
+
+          if not e_guess: e_guess = 1
+
+          has_movie_keywords = any(k in filename.lower() for k in ['movie', 'gekijouban', 'film', 'kanketsu', 'the final'])
+          if (g.get('type') == 'movie' and not anime_match) or has_movie_keywords:
               media_type = 'movie'
 
           tmdb_id = 0
           final_title = search_query
 
           def fetch_tmdb(endpoint, params):
-              for key in [tmdb_key, tmdb_key_2]:
+              for key in[tmdb_key, tmdb_key_2]:
                   if not key: continue
                   try:
                       res = requests.get(f"https://api.themoviedb.org/3{endpoint}?api_key={key}&{params}", timeout=5)
@@ -138,7 +159,7 @@ jobs:
               tv_params = f"query={encoded_query}&first_air_date_year={yr_val}" if yr_val else f"query={encoded_query}"
               
               movie_res = fetch_tmdb('/search/movie', movie_params).get('results',[])
-              tv_res = fetch_tmdb('/search/tv', tv_params).get('results', [])
+              tv_res = fetch_tmdb('/search/tv', tv_params).get('results',[])
               
               best_m = movie_res[0] if movie_res else None
               best_t = tv_res[0] if tv_res else None
@@ -174,20 +195,13 @@ jobs:
           if media_type == 'movie':
               print(f"{folder_title}.{variation}|.|movie|{tmdb_id}|{source}|{quality}|{variation}")
           else:
-              s, e = g.get('season', 1), g.get('episode', 1)
-              if not g.get('episode'):
-                  anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', clean_name)
-                  if anime_match: e = anime_match.group(1)
-                  
-              s_val = int(s[0] if isinstance(s, list) else s) if s else 1
-              e_val = int(e[0] if isinstance(e, list) else e) if e else 1
-              
+              s_val = int(s_guess[0] if isinstance(s_guess, list) else s_guess) if s_guess else 1
+              e_val = int(e_guess[0] if isinstance(e_guess, list) else e_guess) if e_guess else 1
               print(f"{folder_title}|Season.{s_val:02d}/Episode.{e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
           EOF
 
           cat << 'EOF' > metadata_builder.py
           import os, json, requests, subprocess, sys, re, time, urllib.parse
-          from guessit import guessit
 
           file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str, media_type, tmdb_id_str, source_str, resolution_str, variation_str = sys.argv[1:12]
           available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
@@ -207,7 +221,6 @@ jobs:
           manifest_url = f'{base_url}/master.m3u8'
 
           filename = os.path.basename(file_path)
-          g = guessit(re.sub(r'^\[.*?\]\s*', '', filename))
 
           ass_subs_final =[]
           for a in ass_files:
@@ -231,11 +244,14 @@ jobs:
               with open(catalog_path, 'r') as f: catalog = json.load(f)
           except: catalog =[]
 
+          # Directly inherit explicit Episode Numbers to completely ignore NLP NLP bugs.
+          sub_match = re.search(r'Season\.(\d+)/Episode\.(\d+)', sub_dir)
+          s_num = int(sub_match.group(1)) if sub_match else 1
+          e_num = int(sub_match.group(2)) if sub_match else 1
+
           if is_movie:
               show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
           else:
-              s_val = g.get('season', 1)
-              s_num = int(s_val[0] if isinstance(s_val, list) else s_val)
               show_meta = {'id': tmdb_id, 'type': 'anime', 'title': '', 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'average_duration': '0m', 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
 
           if os.path.exists(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json'):
@@ -296,9 +312,6 @@ jobs:
               calc_dur_str = format_dur(show_meta['_total_secs'] / max(show_meta['_ep_count'], 1))
               show_meta['average_duration'] = calc_dur_str
 
-              e_val = g.get('episode', 1)
-              e_num = int(e_val[0] if isinstance(e_val, list) else e_val)
-
               ep_name = f'Episode {e_num}'
               if (tmdb_key or tmdb_key_2) and show_meta['id'] != 0:
                   ep_res = fetch_tmdb(f'/tv/{show_meta["id"]}/season/{s_num}/episode/{e_num}')
@@ -323,7 +336,7 @@ jobs:
                   if resolution_str not in catalog[existing_idx].setdefault('available_resolutions', []):
                       catalog[existing_idx]['available_resolutions'].append(resolution_str)
                       catalog[existing_idx]['available_resolutions'] = sorted(catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
-                  if variation_str not in catalog[existing_idx].setdefault('available_variations', []):
+                  if variation_str not in catalog[existing_idx].setdefault('available_variations',[]):
                       catalog[existing_idx]['available_variations'].append(variation_str)
                   if not isinstance(catalog[existing_idx].get('metadata_url'), dict):
                       catalog[existing_idx]['metadata_url'] = {}
@@ -342,7 +355,7 @@ jobs:
               season_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/{urllib.parse.quote(base_dir)}/metadata.json"
               
               if existing_idx is not None:
-                  if season_str not in catalog[existing_idx].setdefault('available_seasons', []):
+                  if season_str not in catalog[existing_idx].setdefault('available_seasons',[]):
                       catalog[existing_idx]['available_seasons'].append(season_str)
                       catalog[existing_idx]['available_seasons'] = sorted(catalog[existing_idx]['available_seasons'], key=int)
                   if not isinstance(catalog[existing_idx].get('season_sources'), dict):
@@ -388,7 +401,7 @@ jobs:
             
             ORIG_TARGET_DIR="$TARGET_DIR"
             COUNTER=2
-            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+            while[ -d "hls_output/$TARGET_DIR" ] &&[ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
               echo "⚠️ Collision detected! $TARGET_DIR already exists."
               TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
               COUNTER=$((COUNTER+1))
@@ -402,17 +415,17 @@ jobs:
             curl -sL "https://raw.githubusercontent.com/libass/JavascriptSubtitlesOctopus/refs/heads/master/assets/default.woff2" -o "hls_output/$TARGET_DIR/fonts/default.woff2" || true
             FONTS_STR="default.woff2|"
             
-            HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | grep -c -i "attachment" || echo "0")
-            if [ "$HAS_ATTACHMENTS" -gt 0 ]; then
+            HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | grep -i -c "attachment" || echo "0")
+            if[ -n "$HAS_ATTACHMENTS" ] && [ "$HAS_ATTACHMENTS" -gt 0 ] 2>/dev/null; then
               mkdir -p temp_fonts && cd temp_fonts || exit
               ffmpeg -nostdin -y -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1 || true
               cd ..
               
-              if [ "$(ls -A temp_fonts 2>/dev/null || true)" ]; then
+              if[ "$(ls -A temp_fonts 2>/dev/null || true)" ]; then
                 mv temp_fonts/* "hls_output/$TARGET_DIR/fonts/" 2>/dev/null || true
                 for font in "hls_output/$TARGET_DIR/fonts"/*; do
                   FBASE=$(basename "$font")
-                  if [ -f "$font" ] &&[ "$FBASE" != "default.woff2" ]; then 
+                  if [ -f "$font" ] && [ "$FBASE" != "default.woff2" ]; then 
                     FONTS_STR+="${FBASE}|"
                   fi
                 done
@@ -465,7 +478,7 @@ jobs:
                   
                   ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
                   
-                  if [ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
+                  if[ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
                     DETECTED_ASS+="${ASS_BASENAME}|"
                   fi
                 fi
@@ -579,7 +592,6 @@ jobs:
 
             python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR" "$MEDIA_TYPE" "$TMDB_ID" "$SOURCE" "$RESOLUTION" "$VARIATION" || true
             
-            # --- NEW ADDITION: RECLAIM RUNNER STORAGE ---
             echo "🗑️ Purging processed source file to reclaim runner disk space..."
             rm -f "$VIDEO_FILE"
             
@@ -668,8 +680,7 @@ jobs:
                           existing_idx = i
                           break
                   if existing_idx is not None:
-                      # Deep Merge Anime
-                      if 'available_seasons' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_seasons'] = []
+                      if 'available_seasons' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_seasons'] =[]
                       if 'season_sources' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['season_sources'], dict):
                           global_catalog[existing_idx]['season_sources'] = {}
                       if 'season_metadata_urls' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['season_metadata_urls'], dict):
@@ -696,13 +707,12 @@ jobs:
                           existing_idx = i
                           break
                   if existing_idx is not None:
-                      # Deep Merge Movie
                       if 'available_resolutions' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_resolutions'] =[]
-                      if 'available_variations' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_variations'] = []
+                      if 'available_variations' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_variations'] =[]
                       if 'metadata_url' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['metadata_url'], dict):
                           global_catalog[existing_idx]['metadata_url'] = {}
                           
-                      for res in session_item.get('available_resolutions', []):
+                      for res in session_item.get('available_resolutions',[]):
                           if res not in global_catalog[existing_idx]['available_resolutions']:
                               global_catalog[existing_idx]['available_resolutions'].append(res)
                       global_catalog[existing_idx]['available_resolutions'] = sorted(global_catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
@@ -721,7 +731,6 @@ jobs:
           with open('./latest_global_catalog.json', 'w') as f:
               json.dump(global_catalog, f, indent=4)
 
-          # Overwrite the catalog file in place using Batch API
           batch_bucket_files(
               bucket,
               add=[('./latest_global_catalog.json', 'global_catalog.json')],
@@ -737,7 +746,7 @@ jobs:
           QUEUE_CH: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
           PING_CH: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          if [ "${{ job.status }}" == "success" ]; then
+          if[ "${{ job.status }}" == "success" ]; then
             TOTAL_FILES=$(find hls_output -type f | wc -l)
             ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
             ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .ass, fonts)\` synced via CDN."

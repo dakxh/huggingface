@@ -157,7 +157,14 @@ jobs:
 
           folder_title = re.sub(r'[^a-zA-Z0-9]+', '.', final_title).strip('.')
 
-          quality = str(g.get('screen_size', '1080p'))
+          quality_raw = str(g.get('screen_size', '1080p')).lower()
+          if '4k' in quality_raw or '2160' in quality_raw or '3840' in quality_raw:
+              quality = '2160p'
+          elif '720' in quality_raw or '1280' in quality_raw:
+              quality = '720p'
+          else:
+              quality = '1080p'
+              
           is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
           variation = f"{quality}.HDR" if is_hdr else f"{quality}.SDR"
           
@@ -556,9 +563,12 @@ jobs:
                     BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
                   fi
                   BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
-                  RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
-                  [ -z "$RESOLUTION" ] && RESOLUTION="1920x1080"
-                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$RESOLUTION" "$VIDEO_TAG_STR" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
+                  
+                  MANIFEST_RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
+                  MANIFEST_RESOLUTION=$(echo "$MANIFEST_RESOLUTION" | head -n 1 | grep -oE '^[0-9]+x[0-9]+' || echo "1920x1080")
+                  [ -z "$MANIFEST_RESOLUTION" ] && MANIFEST_RESOLUTION="1920x1080"
+                  
+                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION" "$VIDEO_TAG_STR" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 else
                   printf '\n#EXT-X-STREAM-INF:AUDIO="group_audio"\n%s\n' "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 fi

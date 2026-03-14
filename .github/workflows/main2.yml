@@ -129,19 +129,37 @@ jobs:
           
           if anime_match:
               abs_ep = anime_match.group(1)
-              # ENFORCED FIX: Lock to Season 01 for absolute numbering, skipping GuessIt NLP hallucinates entirely
-              s_guess = 1
-              e_guess = abs_ep
-              g['type'] = 'episode'
               
+              # Intelligently check if a Season is ACTUALLY declared in the filename
+              has_season = re.search(r'(?i)(\bs\d+|season\s*\d+|\d+(?:st|nd|rd|th)\s+season)', clean_name)
+              
+              if not has_season:
+                  # If there's no "S02" or "Season 2" explicitly in the name,
+                  # ANY guess over season 1 by guessIT is an NLP triple-digit hallucination (e.g. Ep 300 -> S03).
+                  # Force back to continuous base folder. 
+                  s_guess = 1
+                  e_guess = abs_ep
+              else:
+                  # For shows like 'Jujutsu Kaisen S02 - 14' -> Let GuessIt maintain Season 02
+                  if not e_guess:
+                      e_guess = abs_ep
+                  else:
+                      # Backup fix in case string splicing fails 
+                      s_str = str(s_guess) if s_guess else ""
+                      if (s_str + f"{int(e_guess):02d}" == abs_ep) or (s_str + str(e_guess) == abs_ep):
+                          s_guess = 1
+                          e_guess = abs_ep
+              
+              g['type'] = 'episode'
+
           if not e_guess: e_guess = 1
-          has_movie_keywords = any(k in filename.lower() for k in ['movie', 'gekijouban', 'film', 'kanketsu', 'the final'])
+          has_movie_keywords = any(k in filename.lower() for k in['movie', 'gekijouban', 'film', 'kanketsu', 'the final'])
           if (g.get('type') == 'movie' and not anime_match) or has_movie_keywords:
               media_type = 'movie'
           tmdb_id = 0
           final_title = search_query
           def fetch_tmdb(endpoint, params):
-              for key in[tmdb_key, tmdb_key_2]:
+              for key in [tmdb_key, tmdb_key_2]:
                   if not key: continue
                   try:
                       res = requests.get(f"https://api.themoviedb.org/3{endpoint}?api_key={key}&{params}", timeout=5)
@@ -230,7 +248,7 @@ jobs:
           try:
               with open(catalog_path, 'r') as f: catalog = json.load(f)
           except: catalog =[]
-          # Directly inherit explicit Episode Numbers to completely ignore NLP NLP bugs.
+          # Directly inherit explicit Episode Numbers to completely ignore NLP bugs.
           sub_match = re.search(r'Season\.(\d+)/Episode\.(\d+)', sub_dir)
           s_num = int(sub_match.group(1)) if sub_match else 1
           e_num = int(sub_match.group(2)) if sub_match else 1
@@ -314,7 +332,7 @@ jobs:
                   if resolution_str not in catalog[existing_idx].setdefault('available_resolutions', []):
                       catalog[existing_idx]['available_resolutions'].append(resolution_str)
                       catalog[existing_idx]['available_resolutions'] = sorted(catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
-                  if variation_str not in catalog[existing_idx].setdefault('available_variations',[]):
+                  if variation_str not in catalog[existing_idx].setdefault('available_variations', []):
                       catalog[existing_idx]['available_variations'].append(variation_str)
                   if not isinstance(catalog[existing_idx].get('metadata_url'), dict):
                       catalog[existing_idx]['metadata_url'] = {}
@@ -646,7 +664,7 @@ jobs:
                           global_catalog[existing_idx]['season_sources'] = {}
                       if 'season_metadata_urls' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['season_metadata_urls'], dict):
                           global_catalog[existing_idx]['season_metadata_urls'] = {}
-                      for season_str in session_item.get('available_seasons', []):
+                      for season_str in session_item.get('available_seasons',[]):
                           if season_str not in global_catalog[existing_idx]['available_seasons']:
                               global_catalog[existing_idx]['available_seasons'].append(season_str)
                       global_catalog[existing_idx]['available_seasons'] = sorted(global_catalog[existing_idx]['available_seasons'], key=int)
@@ -668,11 +686,11 @@ jobs:
                           break
                   if existing_idx is not None:
                       if 'available_resolutions' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_resolutions'] =[]
-                      if 'available_variations' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_variations'] =[]
+                      if 'available_variations' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_variations'] = []
                       if 'metadata_url' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['metadata_url'], dict):
                           global_catalog[existing_idx]['metadata_url'] = {}
                           
-                      for res in session_item.get('available_resolutions',[]):
+                      for res in session_item.get('available_resolutions', []):
                           if res not in global_catalog[existing_idx]['available_resolutions']:
                               global_catalog[existing_idx]['available_resolutions'].append(res)
                       global_catalog[existing_idx]['available_resolutions'] = sorted(global_catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))

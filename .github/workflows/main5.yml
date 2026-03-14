@@ -9,6 +9,7 @@ permissions:
 jobs:
   process-queue:
     runs-on: self-hosted
+    timeout-minutes: 7100
 
     steps:
       - name: Checkout Repository

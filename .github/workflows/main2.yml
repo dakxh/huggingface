@@ -111,46 +111,35 @@ jobs:
           cat << 'EOF' > routing.py
           import os, sys, re, requests, urllib.parse
           from guessit import guessit
-
           filename = os.path.basename(sys.argv[1])
           clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\](?=\.mkv|\.mp4)', '', clean_name)
           g = guessit(clean_name)
-
           search_query = g.get('title')
           if not search_query: search_query = os.path.splitext(clean_name)[0]
-
           tmdb_key = os.environ.get('TMDB_API_KEY', '')
           tmdb_key_2 = os.environ.get('TMDB_API_KEY_2', '')
           
           media_type = 'series'
           s_guess = g.get('season', 1)
           e_guess = g.get('episode')
-
+          
           # Detect classic absolute anime episode numbers bypassing GuessIT's Season/Ep splitting errors
           anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v0?)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', clean_name)
           
           if anime_match:
               abs_ep = anime_match.group(1)
-              if not e_guess:
-                  e_guess = abs_ep
-              else:
-                  # Fix NLP hallucination where episode '163' splits into Season 1, Episode 63
-                  s_str = str(s_guess) if s_guess else ""
-                  if (s_str + f"{int(e_guess):02d}" == abs_ep) or (s_str + str(e_guess) == abs_ep):
-                      s_guess = 1
-                      e_guess = abs_ep
+              # ENFORCED FIX: Lock to Season 01 for absolute numbering, skipping GuessIt NLP hallucinates entirely
+              s_guess = 1
+              e_guess = abs_ep
               g['type'] = 'episode'
-
+              
           if not e_guess: e_guess = 1
-
           has_movie_keywords = any(k in filename.lower() for k in ['movie', 'gekijouban', 'film', 'kanketsu', 'the final'])
           if (g.get('type') == 'movie' and not anime_match) or has_movie_keywords:
               media_type = 'movie'
-
           tmdb_id = 0
           final_title = search_query
-
           def fetch_tmdb(endpoint, params):
               for key in[tmdb_key, tmdb_key_2]:
                   if not key: continue
@@ -161,7 +150,6 @@ jobs:
                           return data
                   except: pass
               return {}
-
           if search_query and (tmdb_key or tmdb_key_2):
               encoded_query = urllib.parse.quote(search_query)
               yr_val = str(g.get('year', ''))
@@ -174,20 +162,16 @@ jobs:
               
               best_m = movie_res[0] if movie_res else None
               best_t = tv_res[0] if tv_res else None
-
               if best_m and best_t:
                   match = best_m if media_type == 'movie' else best_t
               else:
                   match = best_m or best_t
                   if best_m: media_type = 'movie'
                   if best_t: media_type = 'series'
-
               if match:
                   tmdb_id = match.get('id', 0)
                   final_title = match.get('name') or match.get('title') or search_query
-
           folder_title = re.sub(r'[^a-zA-Z0-9]+', '.', final_title).strip('.')
-
           quality_raw = str(g.get('screen_size', '1080p')).lower()
           if '4k' in quality_raw or '2160' in quality_raw or '3840' in quality_raw:
               quality = '2160p'
@@ -210,10 +194,8 @@ jobs:
               e_val = int(e_guess[0] if isinstance(e_guess, list) else e_guess) if e_guess else 1
               print(f"{folder_title}|Season.{s_val:02d}/Episode.{e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
           EOF
-
           cat << 'EOF' > metadata_builder.py
           import os, json, requests, subprocess, sys, re, time, urllib.parse
-
           file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str, media_type, tmdb_id_str, source_str, resolution_str, variation_str = sys.argv[1:12]
           available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
           
@@ -227,12 +209,9 @@ jobs:
           HF_ANIME_BUCKET = os.environ.get('HF_ANIME_BUCKET', '')
           tmdb_key = os.environ.get('TMDB_API_KEY', '')
           tmdb_key_2 = os.environ.get('TMDB_API_KEY_2', '')
-
           base_url = f'https://huggingface.co/buckets/{HF_ANIME_BUCKET}/{urllib.parse.quote(target_dir)}'
           manifest_url = f'{base_url}/master.m3u8'
-
           filename = os.path.basename(file_path)
-
           ass_subs_final =[]
           for a in ass_files:
               try: lbl = a.split('_', 2)[-1].rsplit('.ass', 1)[0]
@@ -240,31 +219,25 @@ jobs:
               ass_subs_final.append({'url': f'{base_url}/{urllib.parse.quote(a)}', 'label': lbl})
           
           fonts_final =[f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts]
-
           try:
               cmd =['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
               dur_seconds = float(subprocess.run(cmd, stdout=subprocess.PIPE, text=True).stdout.strip())
           except: dur_seconds = 0.0
           def format_dur(secs): h, m = int(secs//3600), int((secs%3600)//60); return f'{h}h{m}m' if h>0 else f'{m}m'
-
           is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
           size_str = f'{round(os.path.getsize(file_path)/(1024**3), 2)} GB'
-
           catalog_path = 'hls_output/session_catalog.json'
           try:
               with open(catalog_path, 'r') as f: catalog = json.load(f)
           except: catalog =[]
-
           # Directly inherit explicit Episode Numbers to completely ignore NLP NLP bugs.
           sub_match = re.search(r'Season\.(\d+)/Episode\.(\d+)', sub_dir)
           s_num = int(sub_match.group(1)) if sub_match else 1
           e_num = int(sub_match.group(2)) if sub_match else 1
-
           if is_movie:
               show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
           else:
               show_meta = {'id': tmdb_id, 'type': 'anime', 'title': '', 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'average_duration': '0m', 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
-
           if os.path.exists(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json'):
               with open(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json', 'r') as f: 
                   prev = json.load(f)
@@ -273,7 +246,6 @@ jobs:
                       prev['_total_secs'] = prev.get('_total_secs', 0.0)
                       prev['_ep_count'] = prev.get('_ep_count', 0)
                       show_meta.update(prev)
-
           def fetch_tmdb(endpoint):
               for key in [tmdb_key, tmdb_key_2]:
                   if not key: continue
@@ -284,7 +256,6 @@ jobs:
                           return data
                   except: pass
               return {}
-
           if (tmdb_key or tmdb_key_2) and tmdb_id != 0 and not show_meta.get('poster_url'):
               if is_movie:
                   res = fetch_tmdb(f'/movie/{tmdb_id}')
@@ -317,18 +288,15 @@ jobs:
           if not show_meta.get('title'):
               show_meta['title'] = base_dir.rsplit('.', 1)[0].replace('.', ' ').strip()
               if is_movie: show_meta['movie_title'] = show_meta['title']
-
           if not is_movie:
               show_meta['_total_secs'] += dur_seconds; show_meta['_ep_count'] += 1;
               calc_dur_str = format_dur(show_meta['_total_secs'] / max(show_meta['_ep_count'], 1))
               show_meta['average_duration'] = calc_dur_str
-
               ep_name = f'Episode {e_num}'
               if (tmdb_key or tmdb_key_2) and show_meta['id'] != 0:
                   ep_res = fetch_tmdb(f'/tv/{show_meta["id"]}/season/{s_num}/episode/{e_num}')
                   if ep_res and ep_res.get('name'):
                       ep_name = ep_res['name']
-
               show_meta['episodes'] =[ep for ep in show_meta.get('episodes', []) if not (ep['season_number']==s_num and ep['episode_number']==e_num)]
               show_meta['episodes'].append({'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'quality': resolution_str, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url})
               show_meta['episodes'].sort(key=lambda x: (x['season_number'], x['episode_number']))
@@ -339,7 +307,6 @@ jobs:
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
           else:
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
-
           # Local Session Catalog Constructor
           if is_movie:
               existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == show_meta['title']), None)
@@ -355,7 +322,7 @@ jobs:
               else:
                   catalog.append({
                       'id': show_meta['id'], 'type': 'movie', 'title': show_meta['title'], 'year': show_meta['year'],
-                      'available_resolutions':[resolution_str], 'available_variations': [variation_str],
+                      'available_resolutions': [resolution_str], 'available_variations': [variation_str],
                       'date_added': int(time.time()),
                       'metadata_url': {variation_str: f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/{urllib.parse.quote(target_dir)}/metadata.json"},
                       'poster_url': show_meta.get('poster_url', '')
@@ -382,7 +349,6 @@ jobs:
                       'season_sources': {season_str: source_str}, 'season_metadata_urls': {season_str: season_metadata_url},
                       'poster_url': show_meta.get('poster_url', '')
                   })
-
           with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
           EOF
 
@@ -412,14 +378,13 @@ jobs:
             
             ORIG_TARGET_DIR="$TARGET_DIR"
             COUNTER=2
-            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+            while [ -d "hls_output/$TARGET_DIR" ] &&[ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
               echo "⚠️ Collision detected! $TARGET_DIR already exists."
               TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
               COUNTER=$((COUNTER+1))
             done
             
             mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
-
             FONTS_STR=""
             
             mkdir -p "hls_output/$TARGET_DIR/fonts"
@@ -443,14 +408,12 @@ jobs:
               fi
               rm -rf temp_fonts
             fi
-
             STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
             DETECTED_ASS=""; DETECTED_AUDIO=""; AUDIO_MAPS="-map 0:V:0"; VAR_STREAM_MAP="v:0,agroup:audio "; AUDIO_ENCODING=""
             A_IDX=0; STREAM_IDX=1; AUDIO_SED_CMDS=""
             
             HIGHEST_JPN_BITRATE=0; BEST_JPN_AUDIO_ID=""
             HIGHEST_ANY_BITRATE=0; BEST_ANY_AUDIO_ID=""
-
             while IFS=',' read -r index ctype lang; do
               if [[ -z "$index" ]]; then continue; fi
               
@@ -504,7 +467,6 @@ jobs:
                   ja|jap|jpn|japan|japanese) DISPLAY_LANG="Japanese" ;;
                   *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                 esac
-
                 if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
                   AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  "
                   DISPLAY_BITRATE="512kbps"
@@ -533,7 +495,6 @@ jobs:
                 A_IDX=$((A_IDX + 1)); STREAM_IDX=$((STREAM_IDX + 1))
               fi
             done <<< "$STREAMS"
-
             if [[ "$A_IDX" -eq 0 ]]; then 
               AUDIO_MAPS+=" -map 0:a:0"; DETECTED_AUDIO="und"
               A_CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
@@ -550,18 +511,14 @@ jobs:
               VAR_STREAM_MAP="v:0,agroup:audio a:0,agroup:audio,language:und "; AUDIO_SED_CMDS+="s/NAME=\"audio_1\"/NAME=\"Unknown - ${DISPLAY_BITRATE}\"/g; "; BEST_ANY_AUDIO_ID="audio_1"
             fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
-
             VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || true)
             [[ "$VIDEO_CODEC" == "hevc" ]] && V_TAG="-tag:v hvc1" || V_TAG="-tag:v avc1"
-
             ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 -max_muxing_queue_size 9999 \
               -f hls -hls_segment_type mpegts -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
               "hls_output/$TARGET_DIR/stream_%v.m3u8" || continue
-
             if [[ -n "$BEST_JPN_AUDIO_ID" ]]; then DEFAULT_AUDIO_ID="$BEST_JPN_AUDIO_ID"; else DEFAULT_AUDIO_ID="$BEST_ANY_AUDIO_ID"; fi
-
             sed -i '/TYPE=AUDIO/s/DEFAULT=YES/DEFAULT=NO/g' "hls_output/$TARGET_DIR/master.m3u8" || true
             if [[ -n "$DEFAULT_AUDIO_ID" ]]; then
                 awk -v tgt="NAME=\"${DEFAULT_AUDIO_ID}\"" '{ if ($0 ~ /TYPE=AUDIO/ && $0 ~ tgt) { sub(/DEFAULT=NO/, "DEFAULT=YES", $0); }; print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_tmp.m3u8" && mv "hls_output/$TARGET_DIR/master_tmp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
@@ -597,10 +554,8 @@ jobs:
                 fi
               fi
             done
-
             HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/buckets/${HF_ANIME_BUCKET}/${TARGET_DIR}/', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true
-
             python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR" "$MEDIA_TYPE" "$TMDB_ID" "$SOURCE" "$RESOLUTION" "$VARIATION" || true
             
             echo "🗑️ Purging processed source file to reclaim runner disk space..."
@@ -615,13 +570,13 @@ jobs:
             ! -iname "*S00*" \
             ! -iname "*Special OP*" \
             ! -iname "*Special ED*" \
-            ! -path "*/Trailers/*" \
-            ! -path "*/New Folder/*" \
-            ! -path "*/Specials/*" \
-            ! -path "*/Extra/*" \
-            ! -path "*/Extras/*" \
-            ! -path "*/Special/*" \
-            ! -path "*/Other/*")
+            ! -ipath "*/Trailers/*" \
+            ! -ipath "*/New folder/*" \
+            ! -ipath "*/Specials/*" \
+            ! -ipath "*/Extra/*" \
+            ! -ipath "*/Extras/*" \
+            ! -ipath "*/Special/*" \
+            ! -ipath "*/Other/*")
 
       - name: Sync Output to Storage Bucket
         if: env.found == 'true'
@@ -656,10 +611,8 @@ jobs:
           python -c "
           import os, json
           from huggingface_hub import download_bucket_files, batch_bucket_files
-
           bucket = os.environ.get('HF_ANIME_BUCKET')
           token = os.environ.get('HF_TOKEN')
-
           print('⚡ Fetching Global Catalog from Bucket...')
           try:
               download_bucket_files(
@@ -672,17 +625,14 @@ jobs:
           except Exception:
               print('⚠️ No existing catalog found. Generating a new one.')
               global_catalog =[]
-
           try:
               with open('./session_catalog.json', 'r') as f:
                   session_catalog = json.load(f)
           except Exception:
               session_catalog =[]
-
           if not session_catalog:
               print('⚠️ No session catalog found. Nothing to merge.')
               exit(0)
-
           for session_item in session_catalog:
               if session_item.get('type') == 'anime':
                   existing_idx = None
@@ -696,7 +646,6 @@ jobs:
                           global_catalog[existing_idx]['season_sources'] = {}
                       if 'season_metadata_urls' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['season_metadata_urls'], dict):
                           global_catalog[existing_idx]['season_metadata_urls'] = {}
-
                       for season_str in session_item.get('available_seasons', []):
                           if season_str not in global_catalog[existing_idx]['available_seasons']:
                               global_catalog[existing_idx]['available_seasons'].append(season_str)
@@ -738,10 +687,8 @@ jobs:
                       global_catalog[existing_idx]['date_added'] = session_item['date_added']
                   else:
                       global_catalog.append(session_item)
-
           with open('./latest_global_catalog.json', 'w') as f:
               json.dump(global_catalog, f, indent=4)
-
           batch_bucket_files(
               bucket,
               add=[('./latest_global_catalog.json', 'global_catalog.json')],

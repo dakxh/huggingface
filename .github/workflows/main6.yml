@@ -412,7 +412,7 @@ jobs:
                 mv temp_fonts/* "hls_output/$TARGET_DIR/fonts/" 2>/dev/null || true
                 for font in "hls_output/$TARGET_DIR/fonts"/*; do
                   FBASE=$(basename "$font")
-                  if [ -f "$font" ] &&[ "$FBASE" != "default.woff2" ]; then 
+                  if [ -f "$font" ] && [ "$FBASE" != "default.woff2" ]; then 
                     FONTS_STR+="${FBASE}|"
                   fi
                 done

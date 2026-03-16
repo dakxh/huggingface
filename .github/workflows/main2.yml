@@ -348,7 +348,7 @@ jobs:
           else:
               existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'anime' and item.get('title') == show_meta['title']), None)
               season_str = str(s_num)
-              season_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/{urllib.parse.quote(base_dir)}/metadata.json"
+              series_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(base_dir)}/metadata.json"
               
               if existing_idx is not None:
                   if season_str not in catalog[existing_idx].setdefault('available_seasons',[]):
@@ -357,14 +357,13 @@ jobs:
                   if not isinstance(catalog[existing_idx].get('season_sources'), dict):
                       catalog[existing_idx]['season_sources'] = {}
                   catalog[existing_idx]['season_sources'][season_str] = source_str
-                  if not isinstance(catalog[existing_idx].get('season_metadata_urls'), dict):
-                      catalog[existing_idx]['season_metadata_urls'] = {}
-                  catalog[existing_idx]['season_metadata_urls'][season_str] = season_metadata_url
+                  
+                  catalog[existing_idx]['series_metadata_url'] = series_metadata_url
               else:
                   catalog.append({
                       'id': show_meta['id'], 'type': 'anime', 'title': show_meta['title'], 'year': show_meta['year'],
                       'date_added': int(time.time()), 'available_seasons': [season_str],
-                      'season_sources': {season_str: source_str}, 'season_metadata_urls': {season_str: season_metadata_url},
+                      'season_sources': {season_str: source_str}, 'series_metadata_url': series_metadata_url,
                       'poster_url': show_meta.get('poster_url', '')
                   })
           with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
@@ -662,8 +661,10 @@ jobs:
                       if 'available_seasons' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_seasons'] =[]
                       if 'season_sources' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['season_sources'], dict):
                           global_catalog[existing_idx]['season_sources'] = {}
-                      if 'season_metadata_urls' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['season_metadata_urls'], dict):
-                          global_catalog[existing_idx]['season_metadata_urls'] = {}
+                          
+                      if 'season_metadata_urls' in global_catalog[existing_idx]:
+                          del global_catalog[existing_idx]['season_metadata_urls']
+                          
                       for season_str in session_item.get('available_seasons',[]):
                           if season_str not in global_catalog[existing_idx]['available_seasons']:
                               global_catalog[existing_idx]['available_seasons'].append(season_str)
@@ -671,8 +672,9 @@ jobs:
                       
                       if isinstance(session_item.get('season_sources'), dict):
                           global_catalog[existing_idx]['season_sources'].update(session_item['season_sources'])
-                      if isinstance(session_item.get('season_metadata_urls'), dict):
-                          global_catalog[existing_idx]['season_metadata_urls'].update(session_item['season_metadata_urls'])
+                      
+                      if session_item.get('series_metadata_url'):
+                          global_catalog[existing_idx]['series_metadata_url'] = session_item.get('series_metadata_url')
                       
                       global_catalog[existing_idx]['date_added'] = session_item['date_added']
                   else:

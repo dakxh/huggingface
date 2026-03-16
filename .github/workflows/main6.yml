@@ -1,5 +1,4 @@
 name: Anime HLS Engine (.ts + .ass Decoupled) [self hosted]
-
 on:
   workflow_dispatch:
 
@@ -16,17 +15,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Free Up Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
 
       - name: Install Dependencies
         run: |
@@ -326,9 +314,14 @@ jobs:
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
           else:
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
+          
           # Local Session Catalog Constructor
           if is_movie:
               existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == show_meta['title']), None)
+              
+              # ⚡ FIX: Added /resolve/ to the Movie metadata URLs
+              movie_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(target_dir)}/metadata.json"
+              
               if existing_idx is not None:
                   if resolution_str not in catalog[existing_idx].setdefault('available_resolutions', []):
                       catalog[existing_idx]['available_resolutions'].append(resolution_str)
@@ -337,13 +330,16 @@ jobs:
                       catalog[existing_idx]['available_variations'].append(variation_str)
                   if not isinstance(catalog[existing_idx].get('metadata_url'), dict):
                       catalog[existing_idx]['metadata_url'] = {}
-                  catalog[existing_idx]['metadata_url'][variation_str] = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/{urllib.parse.quote(target_dir)}/metadata.json"
+                  
+                  # Apply the corrected URL
+                  catalog[existing_idx]['metadata_url'][variation_str] = movie_metadata_url
               else:
                   catalog.append({
                       'id': show_meta['id'], 'type': 'movie', 'title': show_meta['title'], 'year': show_meta['year'],
                       'available_resolutions': [resolution_str], 'available_variations': [variation_str],
                       'date_added': int(time.time()),
-                      'metadata_url': {variation_str: f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/{urllib.parse.quote(target_dir)}/metadata.json"},
+                      # Apply the corrected URL
+                      'metadata_url': {variation_str: movie_metadata_url},
                       'poster_url': show_meta.get('poster_url', '')
                   })
           else:

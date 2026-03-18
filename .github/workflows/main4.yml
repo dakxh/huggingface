@@ -2,6 +2,12 @@ name: Anime HLS Engine (.ts + .ass Decoupled) [Bucket Edition]
 
 on:
   workflow_dispatch:
+    inputs:
+      base_title:
+        description: 'Override Base Series Title'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -22,6 +28,10 @@ jobs:
           
           # Added PEP 668 breakout to ensure OS pipelines do not break on huggingface pip installs
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
+
+      - name: Set Base Title Env
+        run: |
+          echo "BASE_TITLE=${{ inputs.base_title }}" >> $GITHUB_ENV
 
       - name: Fetch from Discord
         id: discord_fetch
@@ -106,6 +116,13 @@ jobs:
           g = guessit(clean_name)
           search_query = g.get('title')
           if not search_query: search_query = os.path.splitext(clean_name)[0]
+          
+          # --- BASE_TITLE INTEGRATION START ---
+          base_title_override = os.environ.get('BASE_TITLE', '').strip()
+          if base_title_override:
+              search_query = base_title_override.replace('.', ' ')
+          # --- BASE_TITLE INTEGRATION END ---
+
           tmdb_key = os.environ.get('TMDB_API_KEY', '')
           tmdb_key_2 = os.environ.get('TMDB_API_KEY_2', '')
           
@@ -178,7 +195,14 @@ jobs:
               if match:
                   tmdb_id = match.get('id', 0)
                   final_title = match.get('name') or match.get('title') or search_query
-          folder_title = re.sub(r'[^a-zA-Z0-9]+', '.', final_title).strip('.')
+          
+          # --- BASE_TITLE FOLDER FORCING START ---
+          if base_title_override:
+              folder_title = base_title_override
+          else:
+              folder_title = re.sub(r'[^a-zA-Z0-9]+', '.', final_title).strip('.')
+          # --- BASE_TITLE FOLDER FORCING END ---
+          
           quality_raw = str(g.get('screen_size', '1080p')).lower()
           if '4k' in quality_raw or '2160' in quality_raw or '3840' in quality_raw:
               quality = '2160p'
@@ -404,7 +428,6 @@ jobs:
             mkdir -p "hls_output/$TARGET_DIR/fonts"
             curl -sL "https://raw.githubusercontent.com/libass/JavascriptSubtitlesOctopus/refs/heads/master/assets/default.woff2" -o "hls_output/$TARGET_DIR/fonts/default.woff2" || true
             FONTS_STR="default.woff2|"
-            
             HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | grep -i -c "attachment" || echo "0")
             if [ -n "$HAS_ATTACHMENTS" ] && [ "$HAS_ATTACHMENTS" -gt 0 ] 2>/dev/null; then
               mkdir -p temp_fonts && cd temp_fonts || exit
@@ -688,7 +711,7 @@ jobs:
                       if 'available_variations' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_variations'] = []
                       if 'metadata_url' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['metadata_url'], dict):
                           global_catalog[existing_idx]['metadata_url'] = {}
-                          
+                      
                       for res in session_item.get('available_resolutions', []):
                           if res not in global_catalog[existing_idx]['available_resolutions']:
                               global_catalog[existing_idx]['available_resolutions'].append(res)

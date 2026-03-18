@@ -613,6 +613,11 @@ jobs:
             ! -ipath "*/Extra/*" \
             ! -ipath "*/Extras/*" \
             ! -ipath "*/Special/*" \
+            ! -ipath "*/BD Specials (Subbed)/*" \
+            ! -ipath "*/Menu & Logo (JP)/*" \
+            ! -ipath "*/NCED/*" \
+            ! -ipath "*/Scans (JP)/*" \
+            ! -ipath "*/Soundtracks/*" \
             ! -ipath "*/Other/*")
 
       - name: Sync Output to Storage Bucket

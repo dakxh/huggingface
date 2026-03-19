@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       base_title:
-        description: 'Override Base Series Title'
+        description: 'Override Base Series Title (e.g., Demon.Slayer.Kimetsu.no.Yaiba)'
         required: false
         default: ''
         type: string
@@ -110,17 +110,21 @@ jobs:
           cat << 'EOF' > routing.py
           import os, sys, re, requests, urllib.parse
           from guessit import guessit
-          filename = os.path.basename(sys.argv[1])
+          
+          # Use full filepath to establish context
+          filepath = sys.argv[1]
+          filename = os.path.basename(filepath)
           clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\](?=\.mkv|\.mp4)', '', clean_name)
           g = guessit(clean_name)
           search_query = g.get('title')
-          if not search_query: search_query = os.path.splitext(clean_name)[0]
           
           # --- BASE_TITLE INTEGRATION START ---
           base_title_override = os.environ.get('BASE_TITLE', '').strip()
           if base_title_override:
               search_query = base_title_override.replace('.', ' ')
+          elif not search_query: 
+              search_query = os.path.splitext(clean_name)[0]
           # --- BASE_TITLE INTEGRATION END ---
 
           tmdb_key = os.environ.get('TMDB_API_KEY', '')
@@ -130,33 +134,36 @@ jobs:
           s_guess = g.get('season', 1)
           e_guess = g.get('episode')
           
-          # Detect classic absolute anime episode numbers bypassing GuessIT's Season/Ep splitting errors
-          anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v0?)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', clean_name)
+          # --- DIRECTORY SEASON DETECTION ---
+          # Look for 'Season 2', 'S02', etc., in the parent folder paths
+          folder_season_match = re.search(r'(?i)[/\\](?:Season|S)[ _.-]?(\d+)[/\\]', filepath)
+          folder_season = int(folder_season_match.group(1)) if folder_season_match else None
+
+          # Detect classic absolute anime episode numbers
+          anime_match = re.search(r'(?:^|\s-\s|[Ee][Pp]?\s?|v0?)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\(|-)', clean_name)
           
           if anime_match:
-              abs_ep = anime_match.group(1)
+              abs_ep = int(anime_match.group(1))
+              has_season_in_name = re.search(r'(?i)(\bs\d+|season\s*\d+|\d+(?:st|nd|rd|th)\s+season)', clean_name)
               
-              # Intelligently check if a Season is ACTUALLY declared in the filename
-              has_season = re.search(r'(?i)(\bs\d+|season\s*\d+|\d+(?:st|nd|rd|th)\s+season)', clean_name)
-              
-              if not has_season:
-                  # If there's no "S02" or "Season 2" explicitly in the name,
-                  # ANY guess over season 1 by guessIT is an NLP triple-digit hallucination (e.g. Ep 300 -> S03).
-                  # Force back to continuous base folder. 
+              if folder_season:
+                  s_guess = folder_season
+                  e_guess = abs_ep
+              elif not has_season_in_name:
                   s_guess = 1
                   e_guess = abs_ep
               else:
-                  # For shows like 'Jujutsu Kaisen S02 - 14' -> Let GuessIt maintain Season 02
                   if not e_guess:
                       e_guess = abs_ep
                   else:
-                      # Backup fix in case string splicing fails 
                       s_str = str(s_guess) if s_guess else ""
-                      if (s_str + f"{int(e_guess):02d}" == abs_ep) or (s_str + str(e_guess) == abs_ep):
+                      if (s_str + f"{int(e_guess):02d}" == str(abs_ep)) or (s_str + str(e_guess) == str(abs_ep)):
                           s_guess = 1
                           e_guess = abs_ep
-              
               g['type'] = 'episode'
+          else:
+              if folder_season:
+                  s_guess = folder_season
 
           if not e_guess: e_guess = 1
           has_movie_keywords = any(k in filename.lower() for k in['movie', 'gekijouban', 'film', 'kanketsu', 'the final'])
@@ -164,6 +171,7 @@ jobs:
               media_type = 'movie'
           tmdb_id = 0
           final_title = search_query
+
           def fetch_tmdb(endpoint, params):
               for key in [tmdb_key, tmdb_key_2]:
                   if not key: continue
@@ -174,6 +182,7 @@ jobs:
                           return data
                   except: pass
               return {}
+
           if search_query and (tmdb_key or tmdb_key_2):
               encoded_query = urllib.parse.quote(search_query)
               yr_val = str(g.get('year', ''))
@@ -196,12 +205,10 @@ jobs:
                   tmdb_id = match.get('id', 0)
                   final_title = match.get('name') or match.get('title') or search_query
           
-          # --- BASE_TITLE FOLDER FORCING START ---
           if base_title_override:
               folder_title = base_title_override
           else:
               folder_title = re.sub(r'[^a-zA-Z0-9]+', '.', final_title).strip('.')
-          # --- BASE_TITLE FOLDER FORCING END ---
           
           quality_raw = str(g.get('screen_size', '1080p')).lower()
           if '4k' in quality_raw or '2160' in quality_raw or '3840' in quality_raw:
@@ -223,6 +230,17 @@ jobs:
           else:
               s_val = int(s_guess[0] if isinstance(s_guess, list) else s_guess) if s_guess else 1
               e_val = int(e_guess[0] if isinstance(e_guess, list) else e_guess) if e_guess else 1
+              
+              # --- TMDB ABSOLUTE TO RELATIVE EPISODE MAPPING ---
+              if tmdb_id != 0:
+                  season_data = fetch_tmdb(f'/tv/{tmdb_id}/season/{s_val}', '')
+                  if season_data and season_data.get('episodes'):
+                      for ep in season_data['episodes']:
+                          # Check if TMDB explicitly maps our absolute raw number (e.g. 25) to a relative number
+                          if ep.get('absolute_episode_number') == e_val or ep.get('episode_number') == e_val:
+                              e_val = ep.get('episode_number')
+                              break
+
               print(f"{folder_title}|Season.{s_val:02d}/Episode.{e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
           EOF
           cat << 'EOF' > metadata_builder.py
@@ -343,7 +361,6 @@ jobs:
           if is_movie:
               existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == show_meta['title']), None)
               
-              # ⚡ FIX: Added /resolve/ to the Movie metadata URLs
               movie_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(target_dir)}/metadata.json"
               
               if existing_idx is not None:
@@ -355,14 +372,12 @@ jobs:
                   if not isinstance(catalog[existing_idx].get('metadata_url'), dict):
                       catalog[existing_idx]['metadata_url'] = {}
                   
-                  # Apply the corrected URL
                   catalog[existing_idx]['metadata_url'][variation_str] = movie_metadata_url
               else:
                   catalog.append({
                       'id': show_meta['id'], 'type': 'movie', 'title': show_meta['title'], 'year': show_meta['year'],
                       'available_resolutions': [resolution_str], 'available_variations': [variation_str],
                       'date_added': int(time.time()),
-                      # Apply the corrected URL
                       'metadata_url': {variation_str: movie_metadata_url},
                       'poster_url': show_meta.get('poster_url', '')
                   })
@@ -477,7 +492,6 @@ jobs:
                     fi
                   fi
                   
-                  # Strip [Tags], keep allowed chars, and trim lingering hyphens/spaces
                   CLEAN_TITLE=$(echo "$SUB_TITLE" | sed -E 's/\[[^]]*\]//g' | tr -cd 'a-zA-Z0-9 -()&!' | tr -s ' ' | sed -e 's/^[[:space:]-]*//' -e 's/[[:space:]-]*$//')
                   
                   if [ -n "$CLEAN_TITLE" ]; then LABEL="${SUB_LANG} - ${CLEAN_TITLE}"
@@ -562,10 +576,8 @@ jobs:
             fi
             if [ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true; fi
             
-            # ⚡ Purge ffmpeg's default STREAM-INF block so we can cleanly recreate it
             awk '/^#EXT-X-STREAM-INF/ { getline n; next } { print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_clean.m3u8" && mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
             
-            # ⚡ Identify correct codec for manifest injection
             if [[ "$VIDEO_CODEC" == "hevc" ]]; then VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
             else VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""; fi
             
@@ -613,11 +625,6 @@ jobs:
             ! -ipath "*/Extra/*" \
             ! -ipath "*/Extras/*" \
             ! -ipath "*/Special/*" \
-            ! -ipath "*/BD Specials (Subbed)/*" \
-            ! -ipath "*/Menu & Logo (JP)/*" \
-            ! -ipath "*/NCED/*" \
-            ! -ipath "*/Scans (JP)/*" \
-            ! -ipath "*/Soundtracks/*" \
             ! -ipath "*/Other/*")
 
       - name: Sync Output to Storage Bucket

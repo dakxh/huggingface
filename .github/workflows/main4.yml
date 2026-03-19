@@ -624,6 +624,8 @@ jobs:
             ! -ipath "*/Specials/*" \
             ! -ipath "*/Extra/*" \
             ! -ipath "*/Extras/*" \
+            ! -ipath "*/Jujutsu Kaisen 0/*" \
+            ! -ipath "*/NCOP & NCED/*" \
             ! -ipath "*/Special/*" \
             ! -ipath "*/Other/*")
 

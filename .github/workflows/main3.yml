@@ -519,12 +519,14 @@ jobs:
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             
             # REMOVED GLOBAL -swr_opts FLAG
-            if ! ffmpeg -nostdin -filter_threads 4 -fflags +genpts -i "$VIDEO_FILE" \
+            # REMOVED GLOBAL -swr_opts FLAG
+            if ! ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 \
               -max_muxing_queue_size 9999 -f hls -hls_segment_type mpegts \
               -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
+              -shortest \
               "hls_output/$TARGET_DIR/stream_%v.m3u8"; then
               echo "❌ FFMPEG CRASHED! Skipping to next file..."; continue
             fi

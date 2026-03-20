@@ -125,7 +125,7 @@ jobs:
           e_guess = g.get('episode')
           
           # Detect classic absolute anime episode numbers bypassing GuessIT's Season/Ep splitting errors
-          anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v0?)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', clean_name)
+          anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v0?)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\(|-)', clean_name)
           
           if anime_match:
               abs_ep = anime_match.group(1)

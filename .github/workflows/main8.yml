@@ -24,10 +24,11 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip default-jre webp
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp mono-complete
           
-          # Download BDSup2Sub Engine for WebP Sprite Extraction
-          wget -q https://github.com/mjuhasz/BDSup2Sub/releases/download/5.1.2/BDSup2Sub5.1.2.jar
+          # Download SubtitleEdit (Actively maintained, handles both Text and Binary Subtitles)
+          wget -q https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.15/SE4015.zip
+          unzip -q SE4015.zip -d SubtitleEdit
           
           # Added PEP 668 breakout to ensure OS pipelines do not break on huggingface pip installs
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
@@ -249,7 +250,7 @@ jobs:
           cat << 'EOF' > metadata_builder.py
           import os, json, requests, subprocess, sys, re, time, urllib.parse
           
-          # Added explicit extraction for pgs_str to handle the new WebP Overlays
+          # Explicit extraction for pgs_str to handle the new WebP Overlays
           file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str, media_type, tmdb_id_str, source_str, resolution_str, variation_str = sys.argv[1:12]
           pgs_str = sys.argv[12] if len(sys.argv) > 12 else ""
           
@@ -374,7 +375,7 @@ jobs:
           
           # Local Session Catalog Constructor
           if is_movie:
-              existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == show_meta['title']), None)
+              existing_idx = next((i for i, enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == show_meta['title']), None)
               
               movie_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(target_dir)}/metadata.json"
               
@@ -637,7 +638,7 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Extracting Sprite Overlay (XML + WebP)..."
+                      echo "🔍 Detected PGS Subtitle ($lang). Extracting Sprite Overlay via SubtitleEdit..."
                       PGS_DIR="subs_${index}_${lang:-und}"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
@@ -645,19 +646,28 @@ jobs:
                       ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        java -jar BDSup2Sub5.1.2.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1
+                        # Convert SUP to Sony BDN XML (Outputs XML manifest + PNG sequence)
+                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1
                         
-                        # Compress extracted PNGs to WebP and rewrite the XML manifest
-                        for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
-                          if [ -f "$img" ]; then
-                            cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
-                            rm -f "$img"
-                          fi
-                        done
+                        # Locate the generated XML file
+                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         
-                        sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                        
-                        DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                        if [ -n "$XML_FILE" ]; then
+                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          
+                          # Compress extracted PNGs to WebP
+                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
+                            if [ -f "$img" ]; then
+                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
+                              rm -f "$img"
+                            fi
+                          done
+                          
+                          # Rewrite the XML manifest to point to the WebP sprites
+                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          
+                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                        fi
                         rm -f "$TEMP_SUP"
                       fi
                       continue
@@ -723,15 +733,22 @@ jobs:
                       
                       ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1
                       if [ -s "$TEMP_SUP" ]; then
-                        java -jar BDSup2Sub5.1.2.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1
-                        for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
-                          if [ -f "$img" ]; then
-                            cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
-                            rm -f "$img"
-                          fi
-                        done
-                        sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                        DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1
+                        
+                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
+                        if [ -n "$XML_FILE" ]; then
+                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          
+                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
+                            if [ -f "$img" ]; then
+                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
+                              rm -f "$img"
+                            fi
+                          done
+                          
+                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                        fi
                         rm -f "$TEMP_SUP"
                         break
                       fi

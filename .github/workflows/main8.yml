@@ -643,11 +643,11 @@ jobs:
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
-                      ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1
+                      ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
                         # Convert SUP to Sony BDN XML (Outputs XML manifest + PNG sequence)
-                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1
+                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
                         
                         # Locate the generated XML file
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
@@ -674,7 +674,7 @@ jobs:
                     fi
                     
                     # Standard Text Subtitle processing
-                    ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1
+                    ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1 || true
                     
                     if [ -s "$VTT_FILE" ]; then
                       sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$VTT_FILE"
@@ -731,9 +731,9 @@ jobs:
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
-                      ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1
+                      ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1
+                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ]; then
@@ -756,7 +756,7 @@ jobs:
                     fi
 
                     TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
-                    ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1
+                    ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1 || true
                     
                     if [ -s "$TEMP_VTT" ]; then
                       IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")

@@ -24,11 +24,10 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Replaced Mono with Java (default-jre) for native headless image extraction
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp default-jre
           
           # Direct download to the legacy BDSup2Sub Java archive
-          wget -qO BDSup2Sub.jar "https://raw.githubusercontent.com/wiki/mjuhasz/BDSup2Sub/downloads/BDSup2Sub.jar"
+          wget -qO BDSup2Sub.jar "https://github.com/mjuhasz/BDSup2Sub/releases/download/5.1.2/BDSup2Sub5.1.2.jar"
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -616,8 +615,8 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # Pure Java execution. Does not require X11 or GDI+
-                        java -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
+                        # Pure Java execution with Headless Mode and proper Output Flag
+                        java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ]; then
@@ -703,7 +702,7 @@ jobs:
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        java -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
+                        java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ]; then

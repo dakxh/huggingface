@@ -1,4 +1,4 @@
-name: Anime HLS Engine (webp PGS)
+name: Anime HLS Engine (Raw SUP)
 
 on:
   workflow_dispatch:
@@ -24,11 +24,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp mono-complete
-          
-          # Download SubtitleEdit (Actively maintained, handles both Text and Binary Subtitles)
-          wget -q https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.15/SE4015.zip
-          unzip -q SE4015.zip -d SubtitleEdit
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
           
           # Added PEP 668 breakout to ensure OS pipelines do not break on huggingface pip installs
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
@@ -139,7 +135,6 @@ jobs:
           e_guess = g.get('episode')
           
           # --- DIRECTORY SEASON DETECTION ---
-          # Look for 'Season 2', 'S02', etc., in the parent folder paths
           folder_season_match = re.search(r'(?i)[/\\](?:Season|S)[ _.-]?(\d+)[/\\]', filepath)
           folder_season = int(folder_season_match.group(1)) if folder_season_match else None
 
@@ -235,12 +230,10 @@ jobs:
               s_val = int(s_guess[0] if isinstance(s_guess, list) else s_guess) if s_guess else 1
               e_val = int(e_guess[0] if isinstance(e_guess, list) else e_guess) if e_guess else 1
               
-              # --- TMDB ABSOLUTE TO RELATIVE EPISODE MAPPING ---
               if tmdb_id != 0:
                   season_data = fetch_tmdb(f'/tv/{tmdb_id}/season/{s_val}', '')
                   if season_data and season_data.get('episodes'):
                       for ep in season_data['episodes']:
-                          # Check if TMDB explicitly maps our absolute raw number (e.g. 25) to a relative number
                           if ep.get('absolute_episode_number') == e_val or ep.get('episode_number') == e_val:
                               e_val = ep.get('episode_number')
                               break
@@ -250,7 +243,6 @@ jobs:
           cat << 'EOF' > metadata_builder.py
           import os, json, requests, subprocess, sys, re, time, urllib.parse
           
-          # Explicit extraction for pgs_str to handle the new WebP Overlays
           file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str, media_type, tmdb_id_str, source_str, resolution_str, variation_str = sys.argv[1:12]
           pgs_str = sys.argv[12] if len(sys.argv) > 12 else ""
           
@@ -279,7 +271,7 @@ jobs:
           
           pgs_overlays_final = []
           for p in pgs_overlays:
-              try: lbl = p.split('/')[0].split('_', 2)[-1]
+              try: lbl = p.split('_', 2)[-1].rsplit('.sup', 1)[0]
               except: lbl = "Unknown Overlay"
               pgs_overlays_final.append({'url': f'{base_url}/{urllib.parse.quote(p)}', 'label': lbl.capitalize()})
               
@@ -295,7 +287,6 @@ jobs:
           try:
               with open(catalog_path, 'r') as f: catalog = json.load(f)
           except: catalog =[]
-          # Directly inherit explicit Episode Numbers to completely ignore NLP bugs.
           sub_match = re.search(r'Season\.(\d+)/Episode\.(\d+)', sub_dir)
           s_num = int(sub_match.group(1)) if sub_match else 1
           e_num = int(sub_match.group(2)) if sub_match else 1
@@ -373,12 +364,9 @@ jobs:
           else:
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
           
-          # Local Session Catalog Constructor
           if is_movie:
               existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == show_meta['title']), None)
-              
               movie_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(target_dir)}/metadata.json"
-              
               if existing_idx is not None:
                   if resolution_str not in catalog[existing_idx].setdefault('available_resolutions', []):
                       catalog[existing_idx]['available_resolutions'].append(resolution_str)
@@ -387,21 +375,13 @@ jobs:
                       catalog[existing_idx]['available_variations'].append(variation_str)
                   if not isinstance(catalog[existing_idx].get('metadata_url'), dict):
                       catalog[existing_idx]['metadata_url'] = {}
-                  
                   catalog[existing_idx]['metadata_url'][variation_str] = movie_metadata_url
               else:
-                  catalog.append({
-                      'id': show_meta['id'], 'type': 'movie', 'title': show_meta['title'], 'year': show_meta['year'],
-                      'available_resolutions': [resolution_str], 'available_variations': [variation_str],
-                      'date_added': int(time.time()),
-                      'metadata_url': {variation_str: movie_metadata_url},
-                      'poster_url': show_meta.get('poster_url', '')
-                  })
+                  catalog.append({'id': show_meta['id'], 'type': 'movie', 'title': show_meta['title'], 'year': show_meta['year'], 'available_resolutions': [resolution_str], 'available_variations': [variation_str], 'date_added': int(time.time()), 'metadata_url': {variation_str: movie_metadata_url}, 'poster_url': show_meta.get('poster_url', '')})
           else:
               existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'anime' and item.get('title') == show_meta['title']), None)
               season_str = str(s_num)
               series_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(base_dir)}/metadata.json"
-              
               if existing_idx is not None:
                   if season_str not in catalog[existing_idx].setdefault('available_seasons',[]):
                       catalog[existing_idx]['available_seasons'].append(season_str)
@@ -409,15 +389,9 @@ jobs:
                   if not isinstance(catalog[existing_idx].get('season_sources'), dict):
                       catalog[existing_idx]['season_sources'] = {}
                   catalog[existing_idx]['season_sources'][season_str] = source_str
-                  
                   catalog[existing_idx]['series_metadata_url'] = series_metadata_url
               else:
-                  catalog.append({
-                      'id': show_meta['id'], 'type': 'anime', 'title': show_meta['title'], 'year': show_meta['year'],
-                      'date_added': int(time.time()), 'available_seasons': [season_str],
-                      'season_sources': {season_str: source_str}, 'series_metadata_url': series_metadata_url,
-                      'poster_url': show_meta.get('poster_url', '')
-                  })
+                  catalog.append({'id': show_meta['id'], 'type': 'anime', 'title': show_meta['title'], 'year': show_meta['year'], 'date_added': int(time.time()), 'available_seasons': [season_str], 'season_sources': {season_str: source_str}, 'series_metadata_url': series_metadata_url, 'poster_url': show_meta.get('poster_url', '')})
           with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
           EOF
 
@@ -638,37 +612,14 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Extracting Sprite Overlay via SubtitleEdit..."
-                      PGS_DIR="subs_${index}_${lang:-und}"
-                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
-                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
+                      echo "🔍 Detected PGS Subtitle ($lang). Extracting Raw Binary (.sup)..."
+                      SUP_BASENAME="subs_${index}_${lang:-und}.sup"
+                      TEMP_SUP="hls_output/$TARGET_DIR/$SUP_BASENAME"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # Convert SUP to Sony BDN XML (Outputs XML manifest + PNG sequence)
-                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
-                        
-                        # Locate the generated XML file
-                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
-                        
-                        if [ -n "$XML_FILE" ]; then
-                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          
-                          # Compress extracted PNGs to WebP
-                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
-                            if [ -f "$img" ]; then
-                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
-                              rm -f "$img"
-                            fi
-                          done
-                          
-                          # Rewrite the XML manifest to point to the WebP sprites
-                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          
-                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                        fi
-                        rm -f "$TEMP_SUP"
+                          DETECTED_PGS+="${SUP_BASENAME}|"
                       fi
                       continue
                     fi
@@ -726,30 +677,13 @@ jobs:
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Extracting untagged PGS via WebP Sprite Builder..."
-                      PGS_DIR="subs_${index}_unknown"
-                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
-                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
+                      echo "🔍 Extracting untagged PGS Raw Binary (.sup)..."
+                      SUP_BASENAME="subs_${index}_unknown.sup"
+                      TEMP_SUP="hls_output/$TARGET_DIR/$SUP_BASENAME"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
-                        
-                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
-                        if [ -n "$XML_FILE" ]; then
-                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          
-                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
-                            if [ -f "$img" ]; then
-                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
-                              rm -f "$img"
-                            fi
-                          done
-                          
-                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                        fi
-                        rm -f "$TEMP_SUP"
+                        DETECTED_PGS+="${SUP_BASENAME}|"
                         break
                       fi
                       continue
@@ -935,7 +869,7 @@ jobs:
           if [ "${{ job.status }}" == "success" ]; then
             TOTAL_FILES=$(find hls_output -type f | wc -l)
             ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
-            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .vtt, .ass, XML, fonts)\` synced via CDN."
+            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .vtt, .ass, .sup, fonts)\` synced via CDN."
           else
             PAYLOAD=$(jq -n --arg c "❌ **Pipeline Failed!** \n🔗[View Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" '{content: $c}')
             curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CH/messages"

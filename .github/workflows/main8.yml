@@ -462,7 +462,7 @@ jobs:
             HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | grep -i -c "attachment" || echo "0")
             if [ -n "$HAS_ATTACHMENTS" ] && [ "$HAS_ATTACHMENTS" -gt 0 ] 2>/dev/null; then
               mkdir -p temp_fonts && cd temp_fonts || exit
-              ffmpeg -nostdin -y -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1 || true
+              ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1 || true
               cd ..
               
               if [ "$(ls -A temp_fonts 2>/dev/null || true)" ]; then
@@ -517,7 +517,7 @@ jobs:
                   SAFE_LABEL=$(echo "$LABEL" | tr -s ' ')
                   ASS_BASENAME="subs_${index}_${SAFE_LABEL}.ass"
                   
-                  ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
+                  ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
                   
                   if [ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
                     DETECTED_ASS+="${ASS_BASENAME}|"
@@ -581,7 +581,7 @@ jobs:
             VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || true)
             [[ "$VIDEO_CODEC" == "hevc" ]] && V_TAG="-tag:v hvc1" || V_TAG="-tag:v avc1"
             
-            ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
+            ffmpeg -nostdin -fflags +genpts -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 -max_muxing_queue_size 9999 \
               -f hls -hls_segment_type mpegts -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
@@ -643,7 +643,7 @@ jobs:
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
-                      ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
                         # Convert SUP to Sony BDN XML (Outputs XML manifest + PNG sequence)
@@ -674,7 +674,7 @@ jobs:
                     fi
                     
                     # Standard Text Subtitle processing
-                    ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1 || true
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1 || true
                     
                     if [ -s "$VTT_FILE" ]; then
                       sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$VTT_FILE"
@@ -731,7 +731,7 @@ jobs:
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
-                      ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
                         mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
                         
@@ -756,7 +756,7 @@ jobs:
                     fi
 
                     TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
-                    ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1 || true
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1 || true
                     
                     if [ -s "$TEMP_VTT" ]; then
                       IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")

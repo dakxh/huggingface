@@ -1,10 +1,10 @@
-name: Anime HLS Engine (Raw SUP)
+name: Anime HLS Engine (OffscreenCanvas WebP)
 
 on:
   workflow_dispatch:
     inputs:
       base_title:
-        description: 'Override Base Series Title (e.g., Demon.Slayer.Kimetsu.no.Yaiba)'
+        description: 'Override Base Series Title'
         required: false
         default: ''
         type: string
@@ -24,9 +24,12 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
+          # Added libgdiplus and libc6-dev to prevent SubtitleEdit from crashing on Headless Ubuntu
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp mono-complete libgdiplus libc6-dev
           
-          # Added PEP 668 breakout to ensure OS pipelines do not break on huggingface pip installs
+          wget -q https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.15/SE4015.zip
+          unzip -q SE4015.zip -d SubtitleEdit
+          
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
       - name: Set Base Title Env
@@ -40,7 +43,6 @@ jobs:
           CHANNEL_ID: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
         run: |
           g++ discord_manager.cpp -o discord_manager -lcurl
-          
           OUTPUT=$(./discord_manager "$DISCORD_TOKEN" "$CHANNEL_ID" fetch)
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
@@ -51,7 +53,6 @@ jobs:
             exit 0
           fi
           
-          echo "🌸 Anime Target acquired: $TARGET_LINK"
           echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
           echo "TARGET_LINK=$TARGET_LINK" >> $GITHUB_ENV
           echo "found=true" >> $GITHUB_ENV
@@ -111,7 +112,6 @@ jobs:
           import os, sys, re, requests, urllib.parse
           from guessit import guessit
           
-          # Use full filepath to establish context
           filepath = sys.argv[1]
           filename = os.path.basename(filepath)
           clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
@@ -119,13 +119,11 @@ jobs:
           g = guessit(clean_name)
           search_query = g.get('title')
           
-          # --- BASE_TITLE INTEGRATION START ---
           base_title_override = os.environ.get('BASE_TITLE', '').strip()
           if base_title_override:
               search_query = base_title_override.replace('.', ' ')
           elif not search_query: 
               search_query = os.path.splitext(clean_name)[0]
-          # --- BASE_TITLE INTEGRATION END ---
 
           tmdb_key = os.environ.get('TMDB_API_KEY', '')
           tmdb_key_2 = os.environ.get('TMDB_API_KEY_2', '')
@@ -134,11 +132,9 @@ jobs:
           s_guess = g.get('season', 1)
           e_guess = g.get('episode')
           
-          # --- DIRECTORY SEASON DETECTION ---
           folder_season_match = re.search(r'(?i)[/\\](?:Season|S)[ _.-]?(\d+)[/\\]', filepath)
           folder_season = int(folder_season_match.group(1)) if folder_season_match else None
 
-          # Detect classic absolute anime episode numbers
           anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v0?)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\(|-)', clean_name)
           
           if anime_match:
@@ -271,7 +267,7 @@ jobs:
           
           pgs_overlays_final = []
           for p in pgs_overlays:
-              try: lbl = p.split('_', 2)[-1].rsplit('.sup', 1)[0]
+              try: lbl = p.split('/')[0].split('_', 2)[-1]
               except: lbl = "Unknown Overlay"
               pgs_overlays_final.append({'url': f'{base_url}/{urllib.parse.quote(p)}', 'label': lbl.capitalize()})
               
@@ -612,14 +608,31 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Extracting Raw Binary (.sup)..."
-                      SUP_BASENAME="subs_${index}_${lang:-und}.sup"
-                      TEMP_SUP="hls_output/$TARGET_DIR/$SUP_BASENAME"
+                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via SubtitleEdit..."
+                      PGS_DIR="subs_${index}_${lang:-und}"
+                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
+                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                          DETECTED_PGS+="${SUP_BASENAME}|"
+                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
+                        
+                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
+                        if [ -n "$XML_FILE" ]; then
+                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          
+                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
+                            if [ -f "$img" ]; then
+                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
+                              rm -f "$img"
+                            fi
+                          done
+                          
+                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                        fi
+                        rm -f "$TEMP_SUP"
                       fi
                       continue
                     fi
@@ -677,13 +690,30 @@ jobs:
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Extracting untagged PGS Raw Binary (.sup)..."
-                      SUP_BASENAME="subs_${index}_unknown.sup"
-                      TEMP_SUP="hls_output/$TARGET_DIR/$SUP_BASENAME"
+                      echo "🔍 Extracting untagged PGS via WebP Sprite Builder..."
+                      PGS_DIR="subs_${index}_unknown"
+                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
+                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        DETECTED_PGS+="${SUP_BASENAME}|"
+                        mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
+                        
+                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
+                        if [ -n "$XML_FILE" ]; then
+                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          
+                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
+                            if [ -f "$img" ]; then
+                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
+                              rm -f "$img"
+                            fi
+                          done
+                          
+                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                        fi
+                        rm -f "$TEMP_SUP"
                         break
                       fi
                       continue
@@ -869,7 +899,7 @@ jobs:
           if [ "${{ job.status }}" == "success" ]; then
             TOTAL_FILES=$(find hls_output -type f | wc -l)
             ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
-            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .vtt, .ass, .sup, fonts)\` synced via CDN."
+            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .vtt, .ass, XML, fonts)\` synced via CDN."
           else
             PAYLOAD=$(jq -n --arg c "❌ **Pipeline Failed!** \n🔗[View Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" '{content: $c}')
             curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CH/messages"

@@ -24,13 +24,12 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Install Wine, xvfb, and WebP tools
-          sudo dpkg --add-architecture i386
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp xvfb wine
+          # Install Mono, xvfb, GTK2 (Critical for UI rendering), and WebP tools
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp mono-complete xvfb libgdiplus libc6-dev libgtk2.0-0
           
           # Download Windows SubtitleEdit (Portable)
-          wget -qO SE405.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"
-          unzip -q SE405.zip -d SubtitleEdit
+          wget -qO SE.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"
+          unzip -q SE.zip -d SubtitleEdit
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -621,7 +620,7 @@ jobs:
                       if [ -s "$TEMP_SUP" ]; then
                         # Execute Windows SE via Wine to natively handle multi-object PGS
                         export WINEDEBUG=-all
-                        timeout 120 xvfb-run -a wine SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se_wine.log 2>&1 || true
+                        timeout 120 xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se_mono.log 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
@@ -709,7 +708,7 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
                         export WINEDEBUG=-all
-                        timeout 120 xvfb-run -a wine SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se_wine.log 2>&1 || true
+                        timeout 120 xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se_mono.log 2>&1 || true
 
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then

@@ -1,4 +1,4 @@
-name: Anime HLS Engine (BDSup2Sub Java Final)
+name: Anime HLS Engine (Wine SubtitleEdit Final)
 
 on:
   workflow_dispatch:
@@ -24,11 +24,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Install Java, xvfb (virtual display for java swing), and WebP tools
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp default-jre xvfb libc6-dev
+          # Install Wine, xvfb, and WebP tools
+          sudo dpkg --add-architecture i386
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp xvfb wine
           
-          # Download BDSup2Sub (Native Image Extractor)
-          wget -qO BDSup2Sub.jar "https://raw.githubusercontent.com/wiki/mjuhasz/BDSup2Sub/downloads/BDSup2Sub.jar"
+          # Download Windows SubtitleEdit (Portable)
+          wget -qO SE405.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"
+          unzip -q SE405.zip -d SubtitleEdit
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -585,7 +587,7 @@ jobs:
                   MANIFEST_RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
                   MANIFEST_RESOLUTION=$(echo "$MANIFEST_RESOLUTION" | head -n 1 | grep -oE '^[0-9]+x[0-9]+' || echo "1920x1080")
                   [ -z "$MANIFEST_RESOLUTION" ] && MANIFEST_RESOLUTION="1920x1080"
-                                                                           
+                  
                   printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION" "$VIDEO_TAG_STR" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 else
                   printf '\n#EXT-X-STREAM-INF:AUDIO="group_audio"\n%s\n' "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
@@ -609,7 +611,7 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via BDSup2Sub (Java Native)..."
+                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via SubtitleEdit (Wine Native)..."
                       PGS_DIR="subs_${index}_${lang:-und}"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
@@ -617,10 +619,14 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # Execute BDSup2Sub inside a virtual framebuffer to extract raw sprites
-                        timeout 120 xvfb-run -a java -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
+                        # Execute Windows SE via Wine to natively handle multi-object PGS
+                        export WINEDEBUG=-all
+                        timeout 120 xvfb-run -a wine SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se_wine.log 2>&1 || true
                         
-                        if [ -f "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" ]; then
+                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
+                        if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
+                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          
                           for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
                             if [ -f "$img" ]; then
                               cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
@@ -632,10 +638,10 @@ jobs:
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for PGS!"
                         else
-                          echo "❌ BDSup2Sub failed to generate XML from the SUP file. Error Log:"
-                          cat bdsup.log
+                          echo "❌ SubtitleEdit (Wine) failed to generate XML. Error Log:"
+                          cat se_wine.log
                         fi
-                        rm -f "$TEMP_SUP" bdsup.log
+                        rm -f "$TEMP_SUP" se_wine.log
                       else
                         echo "❌ FFmpeg failed to extract the raw SUP stream."
                       fi
@@ -695,16 +701,20 @@ jobs:
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Extracting untagged PGS via BDSup2Sub (Java Native)..."
+                      echo "🔍 Extracting untagged PGS via SubtitleEdit (Wine Native)..."
                       PGS_DIR="subs_${index}_unknown"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        timeout 120 xvfb-run -a java -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
+                        export WINEDEBUG=-all
+                        timeout 120 xvfb-run -a wine SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se_wine.log 2>&1 || true
 
-                        if [ -f "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" ]; then
+                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
+                        if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
+                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          
                           for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
                             if [ -f "$img" ]; then
                               cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
@@ -716,10 +726,10 @@ jobs:
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for untagged PGS!"
                         else
-                          echo "❌ BDSup2Sub failed to generate XML from untagged SUP file. Error Log:"
-                          cat bdsup.log
+                          echo "❌ SubtitleEdit (Wine) failed to generate XML from untagged SUP file. Error Log:"
+                          cat se_wine.log
                         fi
-                        rm -f "$TEMP_SUP" bdsup.log
+                        rm -f "$TEMP_SUP" se_wine.log
                         break
                       else
                         echo "❌ FFmpeg failed to extract the raw untagged SUP stream."

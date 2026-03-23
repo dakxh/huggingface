@@ -1,4 +1,4 @@
-name: Anime HLS Engine (Wine SubtitleEdit Final)
+name: Anime HLS Engine (Native FFmpeg Subtitles)
 
 on:
   workflow_dispatch:
@@ -24,19 +24,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Install Wine, Xvfb, Fonts, and WebP tools
-          sudo dpkg --add-architecture i386
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp xvfb wine fonts-wine fonts-liberation
-          
-          # Download Wine-Mono Installer
-          wget -qO wine-mono.msi "https://dl.winehq.org/wine/wine-mono/9.0.0/wine-mono-9.0.0-x86.msi"
-          
-          # Initialize Wine Headless Environment and FORCE install Mono silently
-          xvfb-run -a bash -c 'wineboot --init; wine msiexec /i wine-mono.msi /qn; wineserver -w'
-          
-          # Download Windows SubtitleEdit (Portable)
-          wget -qO SE405.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"
-          unzip -q SE405.zip -d SubtitleEdit
+          # Purged Wine, Mono, and Java. Standard lightweight Linux pipeline.
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -617,7 +606,7 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via SubtitleEdit (Wine Native)..."
+                      echo "🔍 Detected PGS Subtitle ($lang). Native FFmpeg Extraction (1920x1080 Flattened Sprites)..."
                       PGS_DIR="subs_${index}_${lang:-und}"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
@@ -625,28 +614,67 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # Execute Windows SE via Wine and cleanly wait for wineserver
-                        timeout 120 xvfb-run -a bash -c "wine SubtitleEdit/SubtitleEdit.exe /convert \"$TEMP_SUP\" BdnXml /outputfolder:\"hls_output/$TARGET_DIR/$PGS_DIR\"; wineserver -w" > se_wine.log 2>&1 || true
+                        # Generate flattened WebP sprites + timing logs natively via FFmpeg
+                        ffmpeg -canvas_size 1920x1080 -i "$TEMP_SUP" -filter_complex "showinfo" -fps_mode vfr -c:v libwebp -lossless 0 -q:v 80 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
                         
-                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
-                        if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
-                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          
-                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
-                            if [ -f "$img" ]; then
-                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
-                              rm -f "$img"
-                            fi
-                          done
-                          
-                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                        cd "hls_output/$TARGET_DIR/$PGS_DIR"
+                        cat << 'EOF' > generate_bdn.py
+          import os, re
+          
+          fps = 23.976
+          def secs_to_tc(secs):
+              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
+              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+              
+          frames = []
+          with open("pgs_times.log", "r") as f:
+              for line in f:
+                  if "pts_time:" in line:
+                      match = re.search(r'pts_time:([\d\.]+)', line)
+                      if match: frames.append(float(match.group(1)))
+                      
+          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+          
+          current_event_start = -1
+          current_image = None
+          
+          for i, pts in enumerate(frames):
+              img_file = f"subs_{i+1:04d}.webp"
+              if not os.path.exists(img_file): continue
+              
+              size = os.path.getsize(img_file)
+              is_blank = size < 800  # A fully transparent 1920x1080 WebP compresses to ~50 bytes
+              
+              if not is_blank:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                  current_event_start = pts
+                  current_image = img_file
+              else:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                      current_event_start = -1
+                      current_image = None
+                  os.remove(img_file)
+                  
+          xml_lines.append('</Events>\n</BDN>')
+          with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
+          EOF
+                        python3 generate_bdn.py
+                        rm -f generate_bdn.py pgs_times.log
+                        cd ../../../..
+                        
+                        if [ -f "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" ]; then
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                          echo "✅ Successfully generated WebP Sprites for PGS!"
+                          echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
                         else
-                          echo "❌ SubtitleEdit (Wine) failed to generate XML. Error Log:"
-                          cat se_wine.log
+                          echo "❌ Native FFmpeg extraction failed to produce XML."
                         fi
-                        rm -f "$TEMP_SUP" se_wine.log
+                        rm -f "$TEMP_SUP"
                       else
                         echo "❌ FFmpeg failed to extract the raw SUP stream."
                       fi
@@ -706,34 +734,73 @@ jobs:
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Extracting untagged PGS via SubtitleEdit (Wine Native)..."
+                      echo "🔍 Extracting untagged PGS via Native FFmpeg (1920x1080 Flattened Sprites)..."
                       PGS_DIR="subs_${index}_unknown"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        timeout 120 xvfb-run -a bash -c "wine SubtitleEdit/SubtitleEdit.exe /convert \"$TEMP_SUP\" BdnXml /outputfolder:\"hls_output/$TARGET_DIR/$PGS_DIR\"; wineserver -w" > se_wine.log 2>&1 || true
-
-                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
-                        if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
-                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          
-                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
-                            if [ -f "$img" ]; then
-                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
-                              rm -f "$img"
-                            fi
-                          done
-                          
-                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                        ffmpeg -canvas_size 1920x1080 -i "$TEMP_SUP" -filter_complex "showinfo" -fps_mode vfr -c:v libwebp -lossless 0 -q:v 80 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                        
+                        cd "hls_output/$TARGET_DIR/$PGS_DIR"
+                        cat << 'EOF' > generate_bdn.py
+          import os, re
+          
+          fps = 23.976
+          def secs_to_tc(secs):
+              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
+              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+              
+          frames = []
+          with open("pgs_times.log", "r") as f:
+              for line in f:
+                  if "pts_time:" in line:
+                      match = re.search(r'pts_time:([\d\.]+)', line)
+                      if match: frames.append(float(match.group(1)))
+                      
+          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+          
+          current_event_start = -1
+          current_image = None
+          
+          for i, pts in enumerate(frames):
+              img_file = f"subs_{i+1:04d}.webp"
+              if not os.path.exists(img_file): continue
+              
+              size = os.path.getsize(img_file)
+              is_blank = size < 800
+              
+              if not is_blank:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                  current_event_start = pts
+                  current_image = img_file
+              else:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                      current_event_start = -1
+                      current_image = None
+                  os.remove(img_file)
+                  
+          xml_lines.append('</Events>\n</BDN>')
+          with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
+          EOF
+                        python3 generate_bdn.py
+                        rm -f generate_bdn.py pgs_times.log
+                        cd ../../../..
+                        
+                        if [ -f "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" ]; then
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                          echo "✅ Successfully generated WebP Sprites for untagged PGS!"
+                          echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
                         else
-                          echo "❌ SubtitleEdit (Wine) failed to generate XML from untagged SUP file. Error Log:"
-                          cat se_wine.log
+                          echo "❌ Native FFmpeg extraction failed to produce XML."
                         fi
-                        rm -f "$TEMP_SUP" se_wine.log
+                        rm -f "$TEMP_SUP"
                         break
                       else
                         echo "❌ FFmpeg failed to extract the raw untagged SUP stream."

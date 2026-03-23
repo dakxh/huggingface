@@ -27,6 +27,9 @@ jobs:
           # Install Java 8 specifically to ensure legacy compatibility with BDSup2Sub
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp openjdk-8-jre-headless
           
+          # Failsafe: Systematically disable GNOME Accessibility in the JVM properties
+          sudo sed -i 's/^assistive_technologies=/#&/' /etc/java-8-openjdk/accessibility.properties || true
+          
           # Direct download to the legacy BDSup2Sub Java archive
           wget -qO BDSup2Sub.jar "https://raw.githubusercontent.com/wiki/mjuhasz/BDSup2Sub/downloads/BDSup2Sub.jar"
           
@@ -617,8 +620,8 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # Execute Java 8 explicitly, bypasses Java 21 Class Errors.
-                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
+                        # CORRECTED: Headless + Disabled System Assistive Technologies
+                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -Djavax.accessibility.assistive_technologies= -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
@@ -705,7 +708,7 @@ jobs:
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
+                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -Djavax.accessibility.assistive_technologies= -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then

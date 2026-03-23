@@ -24,8 +24,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Install .NET 8, libgdiplus (for image rendering), and WebP
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp dotnet-sdk-8.0 libgdiplus libc6-dev
+          # Install Mono, xvfb, libgdiplus (for image rendering), and WebP
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp mono-complete xvfb libgdiplus libc6-dev
           
           # Download the latest Portable SubtitleEdit
           wget -qO SE405.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"
@@ -622,7 +622,7 @@ jobs:
                       
                       if [ -s "$TEMP_SUP" ]; then
                         # Execute SubtitleEdit in Native .NET 8 headless background. Added 120s timeout failsafe.
-                        timeout 120 dotnet SubtitleEdit/SubtitleEdit.dll /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se.log 2>&1 || true
+                        timeout 120 xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se.log 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
@@ -709,7 +709,7 @@ jobs:
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        timeout 120 dotnet SubtitleEdit/SubtitleEdit.dll /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se.log 2>&1 || true
+                        timeout 120 xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se.log 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then

@@ -1,4 +1,4 @@
-name: Anime HLS Engine (JASSUB Native)
+name: Anime HLS Engine (BDSup2Sub Final)
 
 on:
   workflow_dispatch:
@@ -24,7 +24,11 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
+          # Install WebP and Java for headless image extraction
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp default-jre
+          
+          # Download the BDSup2Sub engine
+          wget -qO BDSup2Sub.jar "https://raw.githubusercontent.com/wiki/mjuhasz/BDSup2Sub/downloads/BDSup2Sub.jar"
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -261,9 +265,11 @@ jobs:
               except: lbl = "Unknown Subtitle"
               ass_subs_final.append({'url': f'{base_url}/{urllib.parse.quote(a)}', 'label': lbl})
           
+          # Extracts the correct label from the XML directory name
           pgs_overlays_final = []
           for p in pgs_overlays:
-              try: lbl = p.split('_', 2)[-1].rsplit('.sup', 1)[0]
+              if not p.strip(): continue
+              try: lbl = p.split('/')[0].split('_', 2)[-1]
               except: lbl = "Unknown Overlay"
               pgs_overlays_final.append({'url': f'{base_url}/{urllib.parse.quote(p)}', 'label': lbl.capitalize()})
               
@@ -604,15 +610,33 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Extracting Raw Binary (.sup)..."
-                      SUP_BASENAME="subs_${index}_${lang:-und}.sup"
-                      TEMP_SUP="hls_output/$TARGET_DIR/$SUP_BASENAME"
+                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via BDSup2Sub (Java)..."
+                      PGS_DIR="subs_${index}_${lang:-und}"
+                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
+                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        DETECTED_PGS+="${SUP_BASENAME}|"
-                        echo "✅ Successfully Extracted Binary SUP for PGS!"
+                        # CORRECTED: Java headless mode, valid input/output syntax
+                        java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
+                        
+                        XML_FILE="hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                        if [ -f "$XML_FILE" ]; then
+                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
+                            if [ -f "$img" ]; then
+                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
+                              rm -f "$img"
+                            fi
+                          done
+                          
+                          sed -i 's/\.png/.webp/g' "$XML_FILE"
+                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                          echo "✅ Successfully generated WebP Sprites for PGS!"
+                        else
+                          echo "❌ Java failed to generate XML from the SUP file."
+                        fi
+                        rm -f "$TEMP_SUP"
                       else
                         echo "❌ FFmpeg failed to extract the raw SUP stream."
                       fi
@@ -672,14 +696,32 @@ jobs:
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Extracting untagged PGS Raw Binary (.sup)..."
-                      SUP_BASENAME="subs_${index}_unknown.sup"
-                      TEMP_SUP="hls_output/$TARGET_DIR/$SUP_BASENAME"
+                      echo "🔍 Extracting untagged PGS via BDSup2Sub (Java)..."
+                      PGS_DIR="subs_${index}_unknown"
+                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
+                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        DETECTED_PGS+="${SUP_BASENAME}|"
-                        echo "✅ Successfully Extracted Binary SUP for untagged PGS!"
+                        # CORRECTED: Java headless mode, valid input/output syntax
+                        java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
+                        
+                        XML_FILE="hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                        if [ -f "$XML_FILE" ]; then
+                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
+                            if [ -f "$img" ]; then
+                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
+                              rm -f "$img"
+                            fi
+                          done
+                          
+                          sed -i 's/\.png/.webp/g' "$XML_FILE"
+                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                          echo "✅ Successfully generated WebP Sprites for untagged PGS!"
+                        else
+                          echo "❌ Java failed to generate XML from untagged SUP file."
+                        fi
+                        rm -f "$TEMP_SUP"
                         break
                       else
                         echo "❌ FFmpeg failed to extract the raw untagged SUP stream."
@@ -867,7 +909,7 @@ jobs:
           if [ "${{ job.status }}" == "success" ]; then
             TOTAL_FILES=$(find hls_output -type f | wc -l)
             ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
-            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .vtt, .ass, .sup, fonts)\` synced via CDN."
+            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .vtt, .ass, XML, fonts)\` synced via CDN."
           else
             PAYLOAD=$(jq -n --arg c "❌ **Pipeline Failed!** \n🔗[View Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" '{content: $c}')
             curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CH/messages"

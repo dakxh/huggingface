@@ -24,9 +24,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Install Wine, Wine-Mono (prevents popup hangs), Xvfb, Fonts, and WebP tools
+          # Install Wine, Xvfb, Fonts, and WebP tools (Removed invalid wine-mono apt package)
           sudo dpkg --add-architecture i386
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp xvfb wine wine-mono fonts-wine fonts-liberation
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp xvfb wine fonts-wine fonts-liberation
+          
+          # Manually download and inject Wine-Mono to prevent the headless UI popup hang
+          sudo mkdir -p /usr/share/wine/mono
+          sudo wget -qO /usr/share/wine/mono/wine-mono-9.0.0-x86.msi "https://dl.winehq.org/wine/wine-mono/9.0.0/wine-mono-9.0.0-x86.msi"
           
           # Initialize Wine Headless Environment cleanly before the loop
           xvfb-run -a bash -c 'wineboot --init; wineserver -w'

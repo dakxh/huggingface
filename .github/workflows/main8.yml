@@ -585,8 +585,8 @@ jobs:
                   MANIFEST_RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
                   MANIFEST_RESOLUTION=$(echo "$MANIFEST_RESOLUTION" | head -n 1 | grep -oE '^[0-9]+x[0-9]+' || echo "1920x1080")
                   [ -z "$MANIFEST_RESOLUTION" ] && MANIFEST_RESOLUTION="1920x1080"
-                  
-                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION" "$VIDEO_TAG_STR" >> "hls_output/$TARGET_DIR/master.m3u8"
+                                                                           
+                  printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\n%s\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION" "$VIDEO_TAG_STR" "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 else
                   printf '\n#EXT-X-STREAM-INF:AUDIO="group_audio"\n%s\n' "$stream_name" >> "hls_output/$TARGET_DIR/master.m3u8"
                 fi

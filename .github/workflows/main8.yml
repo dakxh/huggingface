@@ -1,4 +1,4 @@
-name: Anime HLS Engine (Wine SubtitleEdit Final)
+name: Anime HLS Engine (Mono SubtitleEdit Final)
 
 on:
   workflow_dispatch:
@@ -24,12 +24,12 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Install Mono, xvfb, GTK2 (Critical for UI rendering), and WebP tools
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp mono-complete xvfb libgdiplus libc6-dev libgtk2.0-0
+          # Install Mono, xvfb, GTK2 (Critical for UI rendering), Fonts, and WebP tools
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp mono-complete xvfb libgdiplus libc6-dev libgtk2.0-0 fonts-liberation
           
           # Download Windows SubtitleEdit (Portable)
-          wget -qO SE.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"
-          unzip -q SE.zip -d SubtitleEdit
+          wget -qO SE405.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"
+          unzip -q SE405.zip -d SubtitleEdit
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -610,7 +610,7 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via SubtitleEdit (Wine Native)..."
+                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via SubtitleEdit (Mono Native)..."
                       PGS_DIR="subs_${index}_${lang:-und}"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
@@ -618,8 +618,7 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # Execute Windows SE via Wine to natively handle multi-object PGS
-                        export WINEDEBUG=-all
+                        # Execute Windows SE via Mono to natively handle multi-object PGS
                         timeout 120 xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se_mono.log 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
@@ -637,10 +636,10 @@ jobs:
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for PGS!"
                         else
-                          echo "❌ SubtitleEdit (Wine) failed to generate XML. Error Log:"
-                          cat se_wine.log
+                          echo "❌ SubtitleEdit (Mono) failed to generate XML. Error Log:"
+                          cat se_mono.log
                         fi
-                        rm -f "$TEMP_SUP" se_wine.log
+                        rm -f "$TEMP_SUP" se_mono.log
                       else
                         echo "❌ FFmpeg failed to extract the raw SUP stream."
                       fi
@@ -700,14 +699,13 @@ jobs:
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Extracting untagged PGS via SubtitleEdit (Wine Native)..."
+                      echo "🔍 Extracting untagged PGS via SubtitleEdit (Mono Native)..."
                       PGS_DIR="subs_${index}_unknown"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        export WINEDEBUG=-all
                         timeout 120 xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" > se_mono.log 2>&1 || true
 
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
@@ -725,10 +723,10 @@ jobs:
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for untagged PGS!"
                         else
-                          echo "❌ SubtitleEdit (Wine) failed to generate XML from untagged SUP file. Error Log:"
-                          cat se_wine.log
+                          echo "❌ SubtitleEdit (Mono) failed to generate XML from untagged SUP file. Error Log:"
+                          cat se_mono.log
                         fi
-                        rm -f "$TEMP_SUP" se_wine.log
+                        rm -f "$TEMP_SUP" se_mono.log
                         break
                       else
                         echo "❌ FFmpeg failed to extract the raw untagged SUP stream."

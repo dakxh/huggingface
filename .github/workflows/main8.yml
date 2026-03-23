@@ -31,7 +31,7 @@ jobs:
           sudo sed -i 's/^assistive_technologies=/#&/' /etc/java-8-openjdk/accessibility.properties || true
           
           # Direct download to the legacy BDSup2Sub Java archive
-          wget -qO BDSup2Sub.jar "https://raw.githubusercontent.com/wiki/mjuhasz/BDSup2Sub/downloads/BDSup2Sub.jar"
+          wget -qO BDSup2Sub.jar "https://github.com/mjuhasz/BDSup2Sub/releases/download/5.1.2/BDSup2Sub5.1.2.jar"
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -620,13 +620,10 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # CORRECTED: Added the missing -o flag
                         /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -Djavax.accessibility.assistive_technologies= -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
                         
-                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
-                        if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
-                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          
+                        XML_FILE="hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                        if [ -f "$XML_FILE" ]; then
                           for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
                             if [ -f "$img" ]; then
                               cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
@@ -634,7 +631,7 @@ jobs:
                             fi
                           done
                           
-                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          sed -i 's/\.png/.webp/g' "$XML_FILE"
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for PGS!"
                         else
@@ -708,13 +705,10 @@ jobs:
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        # CORRECTED: Added the missing -o flag
                         /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -Djavax.accessibility.assistive_technologies= -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
                         
-                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
-                        if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
-                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          
+                        XML_FILE="hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                        if [ -f "$XML_FILE" ]; then
                           for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
                             if [ -f "$img" ]; then
                               cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
@@ -722,7 +716,7 @@ jobs:
                             fi
                           done
                           
-                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          sed -i 's/\.png/.webp/g' "$XML_FILE"
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for untagged PGS!"
                         else

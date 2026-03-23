@@ -620,8 +620,8 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # CORRECTED: Headless + Disabled System Assistive Technologies
-                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -Djavax.accessibility.assistive_technologies= -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
+                        # CORRECTED: Added the missing -o flag
+                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -Djavax.accessibility.assistive_technologies= -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
@@ -708,7 +708,8 @@ jobs:
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -Djavax.accessibility.assistive_technologies= -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
+                        # CORRECTED: Added the missing -o flag
+                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -Djavax.accessibility.assistive_technologies= -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then

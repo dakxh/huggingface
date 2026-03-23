@@ -24,11 +24,11 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Install WebP and Java for headless image extraction
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp default-jre
+          # Install Java 8 specifically to ensure legacy compatibility with BDSup2Sub
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp openjdk-8-jre-headless
           
-          # Download the BDSup2Sub engine
-          wget -qO BDSup2Sub.jar "https://raw.githubusercontent.com/wiki/mjuhasz/BDSup2Sub/downloads/BDSup2Sub.jar"
+          # Direct download to the legacy BDSup2Sub Java archive
+          wget -qO BDSup2Sub.jar "https://github.com/mjuhasz/BDSup2Sub/releases/download/5.1.2/BDSup2Sub5.1.2.jar"
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -265,7 +265,6 @@ jobs:
               except: lbl = "Unknown Subtitle"
               ass_subs_final.append({'url': f'{base_url}/{urllib.parse.quote(a)}', 'label': lbl})
           
-          # Extracts the correct label from the XML directory name
           pgs_overlays_final = []
           for p in pgs_overlays:
               if not p.strip(): continue
@@ -618,11 +617,13 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # CORRECTED: Java headless mode, valid input/output syntax
-                        java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
+                        # Execute Java 8 explicitly, bypasses Java 21 Class Errors.
+                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
                         
-                        XML_FILE="hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                        if [ -f "$XML_FILE" ]; then
+                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
+                        if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
+                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          
                           for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
                             if [ -f "$img" ]; then
                               cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
@@ -630,13 +631,14 @@ jobs:
                             fi
                           done
                           
-                          sed -i 's/\.png/.webp/g' "$XML_FILE"
+                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for PGS!"
                         else
-                          echo "❌ Java failed to generate XML from the SUP file."
+                          echo "❌ Java failed to generate XML from the SUP file. Error Log:"
+                          cat bdsup.log
                         fi
-                        rm -f "$TEMP_SUP"
+                        rm -f "$TEMP_SUP" bdsup.log
                       else
                         echo "❌ FFmpeg failed to extract the raw SUP stream."
                       fi
@@ -703,11 +705,12 @@ jobs:
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        # CORRECTED: Java headless mode, valid input/output syntax
-                        java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
+                        /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" > bdsup.log 2>&1 || true
                         
-                        XML_FILE="hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                        if [ -f "$XML_FILE" ]; then
+                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
+                        if [ -n "$XML_FILE" ] && [ -f "$XML_FILE" ]; then
+                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
+                          
                           for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
                             if [ -f "$img" ]; then
                               cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
@@ -715,13 +718,14 @@ jobs:
                             fi
                           done
                           
-                          sed -i 's/\.png/.webp/g' "$XML_FILE"
+                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for untagged PGS!"
                         else
-                          echo "❌ Java failed to generate XML from untagged SUP file."
+                          echo "❌ Java failed to generate XML from untagged SUP file. Error Log:"
+                          cat bdsup.log
                         fi
-                        rm -f "$TEMP_SUP"
+                        rm -f "$TEMP_SUP" bdsup.log
                         break
                       else
                         echo "❌ FFmpeg failed to extract the raw untagged SUP stream."

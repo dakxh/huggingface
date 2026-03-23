@@ -1,4 +1,4 @@
-name: Anime HLS Engine (BDSup2Sub Holy Grail)
+name: Anime HLS Engine (OffscreenCanvas WebP)
 
 on:
   workflow_dispatch:
@@ -24,10 +24,12 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp default-jre
+          # Added xvfb, libgdiplus, and libc6-dev to create a Virtual Display for SubtitleEdit
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp mono-complete xvfb libgdiplus libc6-dev
           
-          # Direct download to the legacy BDSup2Sub Java archive
-          wget -qO BDSup2Sub.jar "https://raw.githubusercontent.com/wiki/mjuhasz/BDSup2Sub/downloads/BDSup2Sub.jar"
+          # Reverted back to the highly maintained SubtitleEdit engine
+          wget -q https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.15/SE4015.zip
+          unzip -q SE4015.zip -d SubtitleEdit
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -607,7 +609,7 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via BDSup2Sub (Java)..."
+                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via SubtitleEdit inside Virtual Display..."
                       PGS_DIR="subs_${index}_${lang:-und}"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
@@ -615,8 +617,8 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # Pure Java execution with Headless Mode and proper Output Flag
-                        java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
+                        # Execute SubtitleEdit securely inside xvfb (Virtual FrameBuffer) to prevent Headless UI Panics
+                        xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ]; then
@@ -633,7 +635,7 @@ jobs:
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for PGS!"
                         else
-                          echo "❌ Java failed to generate XML from the SUP file."
+                          echo "❌ SubtitleEdit failed to generate XML from the SUP file."
                         fi
                         rm -f "$TEMP_SUP"
                       else
@@ -695,14 +697,14 @@ jobs:
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Extracting untagged PGS via BDSup2Sub (Java)..."
+                      echo "🔍 Extracting untagged PGS via SubtitleEdit inside Virtual Display..."
                       PGS_DIR="subs_${index}_unknown"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
                       TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        java -Djava.awt.headless=true -jar BDSup2Sub.jar "$TEMP_SUP" -o "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" >/dev/null 2>&1 || true
+                        xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
                         
                         XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
                         if [ -n "$XML_FILE" ]; then
@@ -719,7 +721,7 @@ jobs:
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully generated WebP Sprites for untagged PGS!"
                         else
-                          echo "❌ Java failed to generate XML from untagged SUP file."
+                          echo "❌ SubtitleEdit failed to generate XML from untagged SUP file."
                         fi
                         rm -f "$TEMP_SUP"
                         break

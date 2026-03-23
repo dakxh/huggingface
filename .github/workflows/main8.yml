@@ -35,8 +35,8 @@ jobs:
           xvfb-run -a bash -c 'wineboot --init; wine msiexec /i wine-mono.msi /qn; wineserver -w'
           
           # Download Windows SubtitleEdit (Portable)
-          wget -qO SE405.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"
-          unzip -q SE405.zip -d SubtitleEdit
+          wget -qO SE.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"
+          unzip -q SE.zip -d SubtitleEdit
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 

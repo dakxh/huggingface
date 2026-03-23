@@ -24,16 +24,15 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Install Wine, Xvfb, Fonts, and WebP tools (Removed invalid wine-mono apt package)
+          # Install Wine, Xvfb, Fonts, and WebP tools
           sudo dpkg --add-architecture i386
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp xvfb wine fonts-wine fonts-liberation
           
-          # Manually download and inject Wine-Mono to prevent the headless UI popup hang
-          sudo mkdir -p /usr/share/wine/mono
-          sudo wget -qO /usr/share/wine/mono/wine-mono-9.0.0-x86.msi "https://dl.winehq.org/wine/wine-mono/9.0.0/wine-mono-9.0.0-x86.msi"
+          # Download Wine-Mono Installer
+          wget -qO wine-mono.msi "https://dl.winehq.org/wine/wine-mono/9.0.0/wine-mono-9.0.0-x86.msi"
           
-          # Initialize Wine Headless Environment cleanly before the loop
-          xvfb-run -a bash -c 'wineboot --init; wineserver -w'
+          # Initialize Wine Headless Environment and FORCE install Mono silently
+          xvfb-run -a bash -c 'wineboot --init; wine msiexec /i wine-mono.msi /qn; wineserver -w'
           
           # Download Windows SubtitleEdit (Portable)
           wget -qO SE405.zip "https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.5/SE405.zip"

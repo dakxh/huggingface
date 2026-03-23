@@ -1,4 +1,4 @@
-name: Anime HLS Engine (OffscreenCanvas WebP)
+name: Anime HLS Engine (JASSUB Native)
 
 on:
   workflow_dispatch:
@@ -24,12 +24,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # Added xvfb, libgdiplus, and libc6-dev to create a Virtual Display for SubtitleEdit
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp mono-complete xvfb libgdiplus libc6-dev
-          
-          # Reverted back to the highly maintained SubtitleEdit engine
-          wget -q https://github.com/SubtitleEdit/subtitleedit/releases/download/4.0.15/SE4015.zip
-          unzip -q SE4015.zip -d SubtitleEdit
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
@@ -268,7 +263,7 @@ jobs:
           
           pgs_overlays_final = []
           for p in pgs_overlays:
-              try: lbl = p.split('/')[0].split('_', 2)[-1]
+              try: lbl = p.split('_', 2)[-1].rsplit('.sup', 1)[0]
               except: lbl = "Unknown Overlay"
               pgs_overlays_final.append({'url': f'{base_url}/{urllib.parse.quote(p)}', 'label': lbl.capitalize()})
               
@@ -609,35 +604,15 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Extracting XML Sprite Overlay via SubtitleEdit inside Virtual Display..."
-                      PGS_DIR="subs_${index}_${lang:-und}"
-                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
-                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
+                      echo "🔍 Detected PGS Subtitle ($lang). Extracting Raw Binary (.sup)..."
+                      SUP_BASENAME="subs_${index}_${lang:-und}.sup"
+                      TEMP_SUP="hls_output/$TARGET_DIR/$SUP_BASENAME"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       
                       if [ -s "$TEMP_SUP" ]; then
-                        # Execute SubtitleEdit securely inside xvfb (Virtual FrameBuffer) to prevent Headless UI Panics
-                        xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
-                        
-                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
-                        if [ -n "$XML_FILE" ]; then
-                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          
-                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
-                            if [ -f "$img" ]; then
-                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
-                              rm -f "$img"
-                            fi
-                          done
-                          
-                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                          echo "✅ Successfully generated WebP Sprites for PGS!"
-                        else
-                          echo "❌ SubtitleEdit failed to generate XML from the SUP file."
-                        fi
-                        rm -f "$TEMP_SUP"
+                        DETECTED_PGS+="${SUP_BASENAME}|"
+                        echo "✅ Successfully Extracted Binary SUP for PGS!"
                       else
                         echo "❌ FFmpeg failed to extract the raw SUP stream."
                       fi
@@ -697,33 +672,14 @@ jobs:
                   if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Extracting untagged PGS via SubtitleEdit inside Virtual Display..."
-                      PGS_DIR="subs_${index}_unknown"
-                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
-                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
+                      echo "🔍 Extracting untagged PGS Raw Binary (.sup)..."
+                      SUP_BASENAME="subs_${index}_unknown.sup"
+                      TEMP_SUP="hls_output/$TARGET_DIR/$SUP_BASENAME"
                       
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
                       if [ -s "$TEMP_SUP" ]; then
-                        xvfb-run -a mono SubtitleEdit/SubtitleEdit.exe /convert "$TEMP_SUP" BdnXml /outputfolder:"hls_output/$TARGET_DIR/$PGS_DIR" >/dev/null 2>&1 || true
-                        
-                        XML_FILE=$(find "hls_output/$TARGET_DIR/$PGS_DIR" -name "*.xml" | head -n 1)
-                        if [ -n "$XML_FILE" ]; then
-                          mv "$XML_FILE" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          
-                          for img in "hls_output/$TARGET_DIR/$PGS_DIR"/*.png; do
-                            if [ -f "$img" ]; then
-                              cwebp -q 80 "$img" -o "${img%.png}.webp" >/dev/null 2>&1
-                              rm -f "$img"
-                            fi
-                          done
-                          
-                          sed -i 's/\.png/.webp/g' "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"
-                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                          echo "✅ Successfully generated WebP Sprites for untagged PGS!"
-                        else
-                          echo "❌ SubtitleEdit failed to generate XML from untagged SUP file."
-                        fi
-                        rm -f "$TEMP_SUP"
+                        DETECTED_PGS+="${SUP_BASENAME}|"
+                        echo "✅ Successfully Extracted Binary SUP for untagged PGS!"
                         break
                       else
                         echo "❌ FFmpeg failed to extract the raw untagged SUP stream."
@@ -911,7 +867,7 @@ jobs:
           if [ "${{ job.status }}" == "success" ]; then
             TOTAL_FILES=$(find hls_output -type f | wc -l)
             ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
-            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .vtt, .ass, XML, fonts)\` synced via CDN."
+            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .vtt, .ass, .sup, fonts)\` synced via CDN."
           else
             PAYLOAD=$(jq -n --arg c "❌ **Pipeline Failed!** \n🔗[View Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" '{content: $c}')
             curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CH/messages"

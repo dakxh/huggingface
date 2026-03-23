@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp default-jre
           
           # Direct download to the legacy BDSup2Sub Java archive
-          wget -qO BDSup2Sub.jar "https://github.com/mjuhasz/BDSup2Sub/releases/download/5.1.2/BDSup2Sub5.1.2.jar"
+          wget -qO BDSup2Sub.jar "https://raw.githubusercontent.com/wiki/mjuhasz/BDSup2Sub/downloads/BDSup2Sub.jar"
           
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 

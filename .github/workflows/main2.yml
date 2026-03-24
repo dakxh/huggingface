@@ -1,7 +1,13 @@
-name: Anime - cleanup
+name: Anime HLS Engine (Native FFmpeg Subtitles)
 
 on:
   workflow_dispatch:
+    inputs:
+      base_title:
+        description: 'Override Base Series Title (e.g., Demon.Slayer.Kimetsu.no.Yaiba)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -29,10 +35,14 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
+          # Purged Wine, Mono, and Java. Standard lightweight Linux pipeline.
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp
           
-          # Added PEP 668 breakout to ensure OS pipelines do not break on huggingface pip installs
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
+
+      - name: Set Base Title Env
+        run: |
+          echo "BASE_TITLE=${{ inputs.base_title }}" >> $GITHUB_ENV
 
       - name: Fetch from Discord
         id: discord_fetch
@@ -41,7 +51,6 @@ jobs:
           CHANNEL_ID: ${{ secrets.DISCORD_ANIME_CHANNEL_ID }}
         run: |
           g++ discord_manager.cpp -o discord_manager -lcurl
-          
           OUTPUT=$(./discord_manager "$DISCORD_TOKEN" "$CHANNEL_ID" fetch)
           MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
           TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
@@ -52,7 +61,6 @@ jobs:
             exit 0
           fi
           
-          echo "🌸 Anime Target acquired: $TARGET_LINK"
           echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
           echo "TARGET_LINK=$TARGET_LINK" >> $GITHUB_ENV
           echo "found=true" >> $GITHUB_ENV
@@ -111,12 +119,20 @@ jobs:
           cat << 'EOF' > routing.py
           import os, sys, re, requests, urllib.parse
           from guessit import guessit
-          filename = os.path.basename(sys.argv[1])
+          
+          filepath = sys.argv[1]
+          filename = os.path.basename(filepath)
           clean_name = re.sub(r'^\[.*?\]\s*', '', filename)
           clean_name = re.sub(r'\s*\[[A-Fa-f0-9]{8}\](?=\.mkv|\.mp4)', '', clean_name)
           g = guessit(clean_name)
           search_query = g.get('title')
-          if not search_query: search_query = os.path.splitext(clean_name)[0]
+          
+          base_title_override = os.environ.get('BASE_TITLE', '').strip()
+          if base_title_override:
+              search_query = base_title_override.replace('.', ' ')
+          elif not search_query: 
+              search_query = os.path.splitext(clean_name)[0]
+
           tmdb_key = os.environ.get('TMDB_API_KEY', '')
           tmdb_key_2 = os.environ.get('TMDB_API_KEY_2', '')
           
@@ -124,33 +140,33 @@ jobs:
           s_guess = g.get('season', 1)
           e_guess = g.get('episode')
           
-          # Detect classic absolute anime episode numbers bypassing GuessIT's Season/Ep splitting errors
+          folder_season_match = re.search(r'(?i)[/\\](?:Season|S)[ _.-]?(\d+)[/\\]', filepath)
+          folder_season = int(folder_season_match.group(1)) if folder_season_match else None
+
           anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v0?)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\(|-)', clean_name)
           
           if anime_match:
-              abs_ep = anime_match.group(1)
+              abs_ep = int(anime_match.group(1))
+              has_season_in_name = re.search(r'(?i)(\bs\d+|season\s*\d+|\d+(?:st|nd|rd|th)\s+season)', clean_name)
               
-              # Intelligently check if a Season is ACTUALLY declared in the filename
-              has_season = re.search(r'(?i)(\bs\d+|season\s*\d+|\d+(?:st|nd|rd|th)\s+season)', clean_name)
-              
-              if not has_season:
-                  # If there's no "S02" or "Season 2" explicitly in the name,
-                  # ANY guess over season 1 by guessIT is an NLP triple-digit hallucination (e.g. Ep 300 -> S03).
-                  # Force back to continuous base folder. 
+              if folder_season:
+                  s_guess = folder_season
+                  e_guess = abs_ep
+              elif not has_season_in_name:
                   s_guess = 1
                   e_guess = abs_ep
               else:
-                  # For shows like 'Jujutsu Kaisen S02 - 14' -> Let GuessIt maintain Season 02
                   if not e_guess:
                       e_guess = abs_ep
                   else:
-                      # Backup fix in case string splicing fails 
                       s_str = str(s_guess) if s_guess else ""
-                      if (s_str + f"{int(e_guess):02d}" == abs_ep) or (s_str + str(e_guess) == abs_ep):
+                      if (s_str + f"{int(e_guess):02d}" == str(abs_ep)) or (s_str + str(e_guess) == str(abs_ep)):
                           s_guess = 1
                           e_guess = abs_ep
-              
               g['type'] = 'episode'
+          else:
+              if folder_season:
+                  s_guess = folder_season
 
           if not e_guess: e_guess = 1
           has_movie_keywords = any(k in filename.lower() for k in['movie', 'gekijouban', 'film', 'kanketsu', 'the final'])
@@ -158,6 +174,7 @@ jobs:
               media_type = 'movie'
           tmdb_id = 0
           final_title = search_query
+
           def fetch_tmdb(endpoint, params):
               for key in [tmdb_key, tmdb_key_2]:
                   if not key: continue
@@ -168,6 +185,7 @@ jobs:
                           return data
                   except: pass
               return {}
+
           if search_query and (tmdb_key or tmdb_key_2):
               encoded_query = urllib.parse.quote(search_query)
               yr_val = str(g.get('year', ''))
@@ -189,7 +207,12 @@ jobs:
               if match:
                   tmdb_id = match.get('id', 0)
                   final_title = match.get('name') or match.get('title') or search_query
-          folder_title = re.sub(r'[^a-zA-Z0-9]+', '.', final_title).strip('.')
+          
+          if base_title_override:
+              folder_title = base_title_override
+          else:
+              folder_title = re.sub(r'[^a-zA-Z0-9]+', '.', final_title).strip('.')
+          
           quality_raw = str(g.get('screen_size', '1080p')).lower()
           if '4k' in quality_raw or '2160' in quality_raw or '3840' in quality_raw:
               quality = '2160p'
@@ -210,15 +233,28 @@ jobs:
           else:
               s_val = int(s_guess[0] if isinstance(s_guess, list) else s_guess) if s_guess else 1
               e_val = int(e_guess[0] if isinstance(e_guess, list) else e_guess) if e_guess else 1
+              
+              if tmdb_id != 0:
+                  season_data = fetch_tmdb(f'/tv/{tmdb_id}/season/{s_val}', '')
+                  if season_data and season_data.get('episodes'):
+                      for ep in season_data['episodes']:
+                          if ep.get('absolute_episode_number') == e_val or ep.get('episode_number') == e_val:
+                              e_val = ep.get('episode_number')
+                              break
+
               print(f"{folder_title}|Season.{s_val:02d}/Episode.{e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
           EOF
           cat << 'EOF' > metadata_builder.py
           import os, json, requests, subprocess, sys, re, time, urllib.parse
+          
           file_path, base_dir, sub_dir, audio_str, ass_str, fonts_str, media_type, tmdb_id_str, source_str, resolution_str, variation_str = sys.argv[1:12]
+          pgs_str = sys.argv[12] if len(sys.argv) > 12 else ""
+          
           available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
           
           ass_files =[x.strip() for x in ass_str.split('|') if x.strip()]
           fonts =[x.strip() for x in fonts_str.split('|') if x.strip()]
+          pgs_overlays = [x.strip() for x in pgs_str.split('|') if x.strip()]
           
           target_dir = base_dir if sub_dir == '.' else os.path.join(base_dir, sub_dir)
           is_movie = (media_type == 'movie')
@@ -230,12 +266,20 @@ jobs:
           base_url = f'https://huggingface.co/buckets/{HF_ANIME_BUCKET}/{urllib.parse.quote(target_dir)}'
           manifest_url = f'{base_url}/master.m3u8'
           filename = os.path.basename(file_path)
+          
           ass_subs_final =[]
           for a in ass_files:
               try: lbl = a.split('_', 2)[-1].rsplit('.ass', 1)[0]
               except: lbl = "Unknown Subtitle"
               ass_subs_final.append({'url': f'{base_url}/{urllib.parse.quote(a)}', 'label': lbl})
           
+          pgs_overlays_final = []
+          for p in pgs_overlays:
+              if not p.strip(): continue
+              try: lbl = p.split('/')[0].split('_', 2)[-1]
+              except: lbl = "Unknown Overlay"
+              pgs_overlays_final.append({'url': f'{base_url}/{urllib.parse.quote(p)}', 'label': lbl.capitalize()})
+              
           fonts_final =[f'{base_url}/fonts/{urllib.parse.quote(f)}' for f in fonts]
           try:
               cmd =['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
@@ -248,12 +292,11 @@ jobs:
           try:
               with open(catalog_path, 'r') as f: catalog = json.load(f)
           except: catalog =[]
-          # Directly inherit explicit Episode Numbers to completely ignore NLP bugs.
           sub_match = re.search(r'Season\.(\d+)/Episode\.(\d+)', sub_dir)
           s_num = int(sub_match.group(1)) if sub_match else 1
           e_num = int(sub_match.group(2)) if sub_match else 1
           if is_movie:
-              show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
+              show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'pgs_overlays': pgs_overlays_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
           else:
               show_meta = {'id': tmdb_id, 'type': 'anime', 'title': '', 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'average_duration': '0m', 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
           if os.path.exists(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json'):
@@ -321,18 +364,14 @@ jobs:
               
               with open(f'hls_output/{base_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
               
-              ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': filename, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'fonts': fonts_final, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
+              ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': filename, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'pgs_overlays': pgs_overlays_final, 'fonts': fonts_final, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
           else:
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
           
-          # Local Session Catalog Constructor
           if is_movie:
               existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == show_meta['title']), None)
-              
-              # ⚡ FIX: Added /resolve/ to the Movie metadata URLs
               movie_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(target_dir)}/metadata.json"
-              
               if existing_idx is not None:
                   if resolution_str not in catalog[existing_idx].setdefault('available_resolutions', []):
                       catalog[existing_idx]['available_resolutions'].append(resolution_str)
@@ -341,23 +380,13 @@ jobs:
                       catalog[existing_idx]['available_variations'].append(variation_str)
                   if not isinstance(catalog[existing_idx].get('metadata_url'), dict):
                       catalog[existing_idx]['metadata_url'] = {}
-                  
-                  # Apply the corrected URL
                   catalog[existing_idx]['metadata_url'][variation_str] = movie_metadata_url
               else:
-                  catalog.append({
-                      'id': show_meta['id'], 'type': 'movie', 'title': show_meta['title'], 'year': show_meta['year'],
-                      'available_resolutions': [resolution_str], 'available_variations': [variation_str],
-                      'date_added': int(time.time()),
-                      # Apply the corrected URL
-                      'metadata_url': {variation_str: movie_metadata_url},
-                      'poster_url': show_meta.get('poster_url', '')
-                  })
+                  catalog.append({'id': show_meta['id'], 'type': 'movie', 'title': show_meta['title'], 'year': show_meta['year'], 'available_resolutions': [resolution_str], 'available_variations': [variation_str], 'date_added': int(time.time()), 'metadata_url': {variation_str: movie_metadata_url}, 'poster_url': show_meta.get('poster_url', '')})
           else:
               existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'anime' and item.get('title') == show_meta['title']), None)
               season_str = str(s_num)
               series_metadata_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(base_dir)}/metadata.json"
-              
               if existing_idx is not None:
                   if season_str not in catalog[existing_idx].setdefault('available_seasons',[]):
                       catalog[existing_idx]['available_seasons'].append(season_str)
@@ -365,15 +394,9 @@ jobs:
                   if not isinstance(catalog[existing_idx].get('season_sources'), dict):
                       catalog[existing_idx]['season_sources'] = {}
                   catalog[existing_idx]['season_sources'][season_str] = source_str
-                  
                   catalog[existing_idx]['series_metadata_url'] = series_metadata_url
               else:
-                  catalog.append({
-                      'id': show_meta['id'], 'type': 'anime', 'title': show_meta['title'], 'year': show_meta['year'],
-                      'date_added': int(time.time()), 'available_seasons': [season_str],
-                      'season_sources': {season_str: source_str}, 'series_metadata_url': series_metadata_url,
-                      'poster_url': show_meta.get('poster_url', '')
-                  })
+                  catalog.append({'id': show_meta['id'], 'type': 'anime', 'title': show_meta['title'], 'year': show_meta['year'], 'date_added': int(time.time()), 'available_seasons': [season_str], 'season_sources': {season_str: source_str}, 'series_metadata_url': series_metadata_url, 'poster_url': show_meta.get('poster_url', '')})
           with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
           EOF
 
@@ -415,11 +438,10 @@ jobs:
             mkdir -p "hls_output/$TARGET_DIR/fonts"
             curl -sL "https://raw.githubusercontent.com/libass/JavascriptSubtitlesOctopus/refs/heads/master/assets/default.woff2" -o "hls_output/$TARGET_DIR/fonts/default.woff2" || true
             FONTS_STR="default.woff2|"
-            
             HAS_ATTACHMENTS=$(ffprobe -v error -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | grep -i -c "attachment" || echo "0")
             if [ -n "$HAS_ATTACHMENTS" ] && [ "$HAS_ATTACHMENTS" -gt 0 ] 2>/dev/null; then
               mkdir -p temp_fonts && cd temp_fonts || exit
-              ffmpeg -nostdin -y -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1 || true
+              ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -dump_attachment:t "" -i "../$VIDEO_FILE" >/dev/null 2>&1 || true
               cd ..
               
               if [ "$(ls -A temp_fonts 2>/dev/null || true)" ]; then
@@ -434,7 +456,7 @@ jobs:
               rm -rf temp_fonts
             fi
             STREAMS=$(ffprobe -v error -show_entries stream=index,codec_type:stream_tags=language -of csv=p=0 "$VIDEO_FILE" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
-            DETECTED_ASS=""; DETECTED_AUDIO=""; AUDIO_MAPS="-map 0:V:0"; VAR_STREAM_MAP="v:0,agroup:audio "; AUDIO_ENCODING=""
+            DETECTED_ASS=""; DETECTED_PGS=""; DETECTED_AUDIO=""; AUDIO_MAPS="-map 0:V:0"; VAR_STREAM_MAP="v:0,agroup:audio "; AUDIO_ENCODING=""
             A_IDX=0; STREAM_IDX=1; AUDIO_SED_CMDS=""
             
             HIGHEST_JPN_BITRATE=0; BEST_JPN_AUDIO_ID=""
@@ -465,7 +487,6 @@ jobs:
                     fi
                   fi
                   
-                  # Strip [Tags], keep allowed chars, and trim lingering hyphens/spaces
                   CLEAN_TITLE=$(echo "$SUB_TITLE" | sed -E 's/\[[^]]*\]//g' | tr -cd 'a-zA-Z0-9 -()&!' | tr -s ' ' | sed -e 's/^[[:space:]-]*//' -e 's/[[:space:]-]*$//')
                   
                   if [ -n "$CLEAN_TITLE" ]; then LABEL="${SUB_LANG} - ${CLEAN_TITLE}"
@@ -475,7 +496,7 @@ jobs:
                   SAFE_LABEL=$(echo "$LABEL" | tr -s ' ')
                   ASS_BASENAME="subs_${index}_${SAFE_LABEL}.ass"
                   
-                  ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
+                  ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" "hls_output/$TARGET_DIR/$ASS_BASENAME" >/dev/null 2>&1 || true
                   
                   if [ -s "hls_output/$TARGET_DIR/$ASS_BASENAME" ]; then
                     DETECTED_ASS+="${ASS_BASENAME}|"
@@ -493,7 +514,7 @@ jobs:
                   *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                 esac
                 if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
-                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  "
+                  AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -threads 0 -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  "
                   DISPLAY_BITRATE="512kbps"
                   TRACK_BITRATE=512000
                 else
@@ -523,7 +544,7 @@ jobs:
             if [[ "$A_IDX" -eq 0 ]]; then 
               AUDIO_MAPS+=" -map 0:a:0"; DETECTED_AUDIO="und"
               A_CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
-              if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  "; DISPLAY_BITRATE="512kbps"
+              if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -threads 0 -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  "; DISPLAY_BITRATE="512kbps"
               else AUDIO_ENCODING=" -c:a:0 copy "
                 ORIG_BITRATE=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]')
                 if [[ -z "$ORIG_BITRATE" || ! "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
@@ -538,11 +559,13 @@ jobs:
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || true)
             [[ "$VIDEO_CODEC" == "hevc" ]] && V_TAG="-tag:v hvc1" || V_TAG="-tag:v avc1"
-            ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
+            
+            ffmpeg -nostdin -fflags +genpts -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 -max_muxing_queue_size 9999 \
               -f hls -hls_segment_type mpegts -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
               "hls_output/$TARGET_DIR/stream_%v.m3u8" || continue
+              
             if [[ -n "$BEST_JPN_AUDIO_ID" ]]; then DEFAULT_AUDIO_ID="$BEST_JPN_AUDIO_ID"; else DEFAULT_AUDIO_ID="$BEST_ANY_AUDIO_ID"; fi
             sed -i '/TYPE=AUDIO/s/DEFAULT=YES/DEFAULT=NO/g' "hls_output/$TARGET_DIR/master.m3u8" || true
             if [[ -n "$DEFAULT_AUDIO_ID" ]]; then
@@ -550,10 +573,8 @@ jobs:
             fi
             if [ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8" || true; fi
             
-            # ⚡ Purge ffmpeg's default STREAM-INF block so we can cleanly recreate it
             awk '/^#EXT-X-STREAM-INF/ { getline n; next } { print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_clean.m3u8" && mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
             
-            # ⚡ Identify correct codec for manifest injection
             if [[ "$VIDEO_CODEC" == "hevc" ]]; then VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
             else VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""; fi
             
@@ -581,7 +602,251 @@ jobs:
             done
             HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/buckets/${HF_ANIME_BUCKET}/${TARGET_DIR}/', safe=':/'))")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true
-            python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR" "$MEDIA_TYPE" "$TMDB_ID" "$SOURCE" "$RESOLUTION" "$VARIATION" || true
+            
+            HAS_SUBS="false"; echo "" >> "hls_output/$TARGET_DIR/master.m3u8"
+            VID_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+            VID_DUR_INT=$(printf "%.0f" "$VID_DUR" 2>/dev/null || echo "36000")
+            
+            # --- START SUBTITLE EXTRACTION LOOP ---
+            while IFS=',' read -r index ctype lang title; do
+              if [[ "$ctype" == "subtitle" ]]; then
+                if [[ "$lang $title" =~ $LANG_REGEX ]]; then
+                  SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                  if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
+                    VTT_BASENAME="subs_${index}_${lang:-und}.vtt"; M3U8_BASENAME="subs_${index}_${lang:-und}.m3u8"
+                    VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
+                    
+                    if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
+                      echo "🔍 Detected PGS Subtitle (${lang:-unknown}). Native FFmpeg Extraction (1920x1080 Flattened Sprites)..."
+                      PGS_DIR="subs_${index}_${lang:-unknown}"
+                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
+
+                      # FIX: Bridge the Subtitle stream to a Video stream using filter_complex to map it correctly into WebP
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=1920:1080,format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+
+                      # Verify images were actually generated
+                      if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
+                        (
+                          cd "hls_output/$TARGET_DIR/$PGS_DIR"
+                          cat << 'EOF' > generate_bdn.py
+          import os, re
+          
+          fps = 23.976
+          def secs_to_tc(secs):
+              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
+              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+              
+          frames = []
+          with open("pgs_times.log", "r") as f:
+              for line in f:
+                  if "pts_time:" in line:
+                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
+                      if match: frames.append(float(match.group(1)))
+                      
+          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+          
+          current_event_start = -1
+          current_image = None
+          
+          for i, pts in enumerate(frames):
+              img_file = f"subs_{i+1:04d}.webp"
+              if not os.path.exists(img_file): continue
+              
+              size = os.path.getsize(img_file)
+              is_blank = size < 1024 
+              
+              if not is_blank:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                  current_event_start = pts
+                  current_image = img_file
+              else:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                      current_event_start = -1
+                      current_image = None
+                  os.remove(img_file)
+                  
+          xml_lines.append('</Events>\n</BDN>')
+          with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
+          EOF
+                          python3 generate_bdn.py
+                          rm -f generate_bdn.py pgs_times.log
+                        )
+                        
+                        if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
+                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                          echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
+                        else
+                          echo "❌ FFmpeg extraction produced empty XML (no visible events)."
+                          rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
+                        fi
+                      else
+                        echo "❌ FFmpeg failed to extract the PGS stream to images. Error Log:"
+                        cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
+                        rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
+                      fi
+                      continue
+                    fi
+                    
+                    # Standard Text Subtitle processing
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1 || true
+                    
+                    if [ -s "$VTT_FILE" ]; then
+                      sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$VTT_FILE"
+                      HAS_SUBS="true"; DETECTED_SUBS="$DETECTED_SUBS ${lang:-und}"
+                      SUB_LANG="Unknown"
+                      case "${lang,,}" in
+                        en|eng|english) SUB_LANG="English" ;;
+                        hi|hin|hindi) SUB_LANG="Hindi" ;;
+                        te|tel|telugu) SUB_LANG="Telugu" ;;
+                        ja|jap|jpn|japan|japanese) SUB_LANG="Japanese" ;;
+                        *) [ -n "$lang" ] && SUB_LANG="$(echo "$lang" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
+                      esac
+
+                      CLEAN_TITLE=$(echo "$title" | tr -cd 'a-zA-Z0-9 ()[]_-' | sed 's/^ *//;s/ *$//')
+                      CLEAN_TITLE="$(echo "$CLEAN_TITLE" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2)); print $0}')"
+                      CLEAN_TITLE=$(echo "$CLEAN_TITLE" | sed 's/\bSdh\b/SDH/g; s/\bCc\b/CC/g')
+
+                      if [[ "${CLEAN_TITLE,,}" == "${lang,,}" || "${CLEAN_TITLE,,}" == "${SUB_LANG,,}" ]]; then CLEAN_TITLE=""; fi
+                      if [ -n "$CLEAN_TITLE" ]; then
+                        if [[ "${CLEAN_TITLE,,}" == "${SUB_LANG,,}"* ]]; then FINAL_SUB_NAME="$CLEAN_TITLE"
+                        else FINAL_SUB_NAME="${SUB_LANG} - ${CLEAN_TITLE}"; fi
+                      else FINAL_SUB_NAME="${SUB_LANG}"; fi
+                      [ -z "$FINAL_SUB_NAME" ] && FINAL_SUB_NAME="Sub_${index}"
+                      
+                      printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "$M3U8_FILE"
+                      printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="%s",LANGUAGE="%s",URI="%s"\n' "$FINAL_SUB_NAME" "${lang:-und}" "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"
+                    else rm -f "$VTT_FILE"; fi
+                  fi
+                fi
+              fi
+            done <<< "$STREAMS"
+            
+            # --- FALLBACK SCANNER LOOP FOR UNTAGGED SUBS ---
+            if [[ "$HAS_SUBS" == "false" && -z "$DETECTED_PGS" ]]; then
+              echo "⚠️ No matching tagged subtitles found. Scanning unidentified tracks..."
+              cat << 'EOF' > detect_eng.py
+          import sys, re
+          try:
+              with open(sys.argv[1], 'r', encoding='utf-8', errors='ignore') as f: text = f.read().lower()
+              words = re.findall(r'\b[a-z]{2,5}\b', text)
+              eng = {'the','and','that','have','for','not','with','you','this','but','his','from','they','say','she','will','what','who','get','when','make','can','like','time','just','know','take','your','good','some','could','them','other','than','then','now','look','only','come','over','think','also','back','after','how','our','first','well','way','even','want','because','any','these','give','most','are','was','were'}
+              print('true' if sum(1 for w in words if w in eng) > 15 else 'false')
+          except: print('false')
+          EOF
+
+              while IFS=',' read -r index ctype lang title; do
+                if [[ "$ctype" == "subtitle" ]]; then
+                  SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                  if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle)$ ]]; then
+                    
+                    if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
+                      echo "🔍 Extracting untagged PGS via Native FFmpeg (1920x1080 Flattened Sprites)..."
+                      PGS_DIR="subs_${index}_unknown"
+                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
+
+                      # FIX: Bridge the Subtitle stream to a Video stream using filter_complex to map it correctly into WebP
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=1920:1080,format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+
+                      if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
+                        (
+                          cd "hls_output/$TARGET_DIR/$PGS_DIR"
+                          cat << 'EOF' > generate_bdn.py
+          import os, re
+          
+          fps = 23.976
+          def secs_to_tc(secs):
+              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
+              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+              
+          frames = []
+          with open("pgs_times.log", "r") as f:
+              for line in f:
+                  if "pts_time:" in line:
+                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
+                      if match: frames.append(float(match.group(1)))
+                      
+          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+          
+          current_event_start = -1
+          current_image = None
+          
+          for i, pts in enumerate(frames):
+              img_file = f"subs_{i+1:04d}.webp"
+              if not os.path.exists(img_file): continue
+              
+              size = os.path.getsize(img_file)
+              is_blank = size < 1024 
+              
+              if not is_blank:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                  current_event_start = pts
+                  current_image = img_file
+              else:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                      current_event_start = -1
+                      current_image = None
+                  os.remove(img_file)
+                  
+          xml_lines.append('</Events>\n</BDN>')
+          with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
+          EOF
+                          python3 generate_bdn.py
+                          rm -f generate_bdn.py pgs_times.log
+                        )
+                        
+                        if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
+                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                          echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
+                        else
+                          echo "❌ FFmpeg extraction produced empty XML (no visible events)."
+                          rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
+                        fi
+                        break
+                      else
+                        echo "❌ FFmpeg failed to extract the untagged PGS stream to images. Error Log:"
+                        cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
+                        rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
+                      fi
+                      continue
+                    fi
+
+                    TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1 || true
+                    
+                    if [ -s "$TEMP_VTT" ]; then
+                      IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")
+                      if [[ "$IS_ENGLISH" == "true" ]]; then
+                        sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$TEMP_VTT"
+                        VTT_BASENAME="subs_${index}_eng.vtt"; M3U8_BASENAME="subs_${index}_eng.m3u8"
+                        mv "$TEMP_VTT" "hls_output/$TARGET_DIR/$VTT_BASENAME"
+                        HAS_SUBS="true"; DETECTED_SUBS="$DETECTED_SUBS eng"
+                        printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "hls_output/$TARGET_DIR/$M3U8_BASENAME"
+                        printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="English (Auto)",LANGUAGE="eng",URI="%s"\n' "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"
+                        break
+                      else rm -f "$TEMP_VTT"; fi
+                    else rm -f "$TEMP_VTT"; fi
+                  fi
+                fi
+              done <<< "$STREAMS"
+              rm -f detect_eng.py
+            fi
+            
+            if [[ "$HAS_SUBS" == "true" ]]; then VIDEO_MANIFEST_INJECTION=$(echo "$VIDEO_MANIFEST_INJECTION" | sed 's/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/'); fi
+            echo "$VIDEO_MANIFEST_INJECTION" >> "hls_output/$TARGET_DIR/master.m3u8"
+
+            python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "$DETECTED_AUDIO" "$DETECTED_ASS" "$FONTS_STR" "$MEDIA_TYPE" "$TMDB_ID" "$SOURCE" "$RESOLUTION" "$VARIATION" "$DETECTED_PGS" || true
             
             echo "🗑️ Purging processed source file to reclaim runner disk space..."
             rm -f "$VIDEO_FILE"
@@ -600,6 +865,8 @@ jobs:
             ! -ipath "*/Specials/*" \
             ! -ipath "*/Extra/*" \
             ! -ipath "*/Extras/*" \
+            ! -ipath "*/Jujutsu Kaisen 0/*" \
+            ! -ipath "*/NCOP & NCED/*" \
             ! -ipath "*/Special/*" \
             ! -ipath "*/Other/*")
 
@@ -699,7 +966,7 @@ jobs:
                       if 'available_variations' not in global_catalog[existing_idx]: global_catalog[existing_idx]['available_variations'] = []
                       if 'metadata_url' not in global_catalog[existing_idx] or not isinstance(global_catalog[existing_idx]['metadata_url'], dict):
                           global_catalog[existing_idx]['metadata_url'] = {}
-                          
+                      
                       for res in session_item.get('available_resolutions', []):
                           if res not in global_catalog[existing_idx]['available_resolutions']:
                               global_catalog[existing_idx]['available_resolutions'].append(res)
@@ -735,7 +1002,7 @@ jobs:
           if [ "${{ job.status }}" == "success" ]; then
             TOTAL_FILES=$(find hls_output -type f | wc -l)
             ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CH" delete "$MSG_ID"
-            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .ass, fonts)\` synced via CDN."
+            ./discord_manager "$DISCORD_TOKEN" "$PING_CH" send "✅ **Anime Bucket Sync Complete!** \n\`${TOTAL_FILES} files (.ts, .vtt, .ass, XML, fonts)\` synced via CDN."
           else
             PAYLOAD=$(jq -n --arg c "❌ **Pipeline Failed!** \n🔗[View Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" '{content: $c}')
             curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CH/messages"

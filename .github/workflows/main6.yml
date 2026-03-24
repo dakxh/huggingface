@@ -1,4 +1,4 @@
-name: Anime HLS Engine (Native FFmpeg Subtitles)
+name: Anime HLS Engine [self hosted]
 
 on:
   workflow_dispatch:
@@ -14,7 +14,8 @@ permissions:
 
 jobs:
   process-anime:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    timeout-minutes: 7100
 
     steps:
       - name: Checkout Repository

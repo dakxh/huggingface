@@ -610,10 +610,10 @@ jobs:
                       PGS_DIR="subs_${index}_${lang:-unknown}"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                      # Extract directly from MKV to preserve absolute PTS. Force yuva420p and lossless WebP for reliable blank frame sizes.
-                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -canvas_size 1920x1080 -i "$VIDEO_FILE" -map "0:$index" -vf "showinfo" -fps_mode vfr -pix_fmt yuva420p -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                      # Extract directly from MKV. Fixed by removing unsupported canvas_size demuxer flag and forcing rgba for lossless WebP.
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -vf "showinfo" -fps_mode vfr -pix_fmt rgba -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
-                      # Verify images were actually generated before running Python
+                      # Verify images were actually generated
                       if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                         (
                           cd "hls_output/$TARGET_DIR/$PGS_DIR"
@@ -675,7 +675,8 @@ jobs:
                           rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                         fi
                       else
-                        echo "❌ FFmpeg failed to extract the PGS stream to images."
+                        echo "❌ FFmpeg failed to extract the PGS stream to images. Error Log:"
+                        cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
                         rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                       fi
                       continue
@@ -738,8 +739,8 @@ jobs:
                       PGS_DIR="subs_${index}_unknown"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                      # Extract directly from MKV to preserve absolute PTS. Force yuva420p and lossless WebP for reliable blank frame sizes.
-                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -canvas_size 1920x1080 -i "$VIDEO_FILE" -map "0:$index" -vf "showinfo" -fps_mode vfr -pix_fmt yuva420p -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                      # Extract directly from MKV. Fixed by removing unsupported canvas_size demuxer flag and forcing rgba for lossless WebP.
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -vf "showinfo" -fps_mode vfr -pix_fmt rgba -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                       if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                         (
@@ -803,7 +804,8 @@ jobs:
                         fi
                         break
                       else
-                        echo "❌ FFmpeg failed to extract the untagged PGS stream to images."
+                        echo "❌ FFmpeg failed to extract the untagged PGS stream to images. Error Log:"
+                        cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
                         rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                       fi
                       continue

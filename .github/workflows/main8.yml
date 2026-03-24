@@ -610,8 +610,8 @@ jobs:
                       PGS_DIR="subs_${index}_${lang:-unknown}"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                      # Extract directly from MKV. Fixed by removing unsupported canvas_size demuxer flag and forcing rgba for lossless WebP.
-                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -vf "showinfo" -fps_mode vfr -pix_fmt rgba -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                      # FIX: Bridge the Subtitle stream to a Video stream using filter_complex to map it correctly into WebP
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=1920:1080,format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                       # Verify images were actually generated
                       if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
@@ -739,8 +739,8 @@ jobs:
                       PGS_DIR="subs_${index}_unknown"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                      # Extract directly from MKV. Fixed by removing unsupported canvas_size demuxer flag and forcing rgba for lossless WebP.
-                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -vf "showinfo" -fps_mode vfr -pix_fmt rgba -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                      # FIX: Bridge the Subtitle stream to a Video stream using filter_complex to map it correctly into WebP
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=1920:1080,format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                       if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                         (

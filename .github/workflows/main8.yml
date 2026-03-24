@@ -617,8 +617,9 @@ jobs:
                         # Generate flattened WebP sprites + timing logs natively via FFmpeg
                         ffmpeg -canvas_size 1920x1080 -i "$TEMP_SUP" -filter_complex "showinfo" -fps_mode vfr -c:v libwebp -lossless 0 -q:v 80 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
                         
-                        cd "hls_output/$TARGET_DIR/$PGS_DIR"
-                        cat << 'EOF' > generate_bdn.py
+                        (
+                          cd "hls_output/$TARGET_DIR/$PGS_DIR"
+                          cat << 'EOF' > generate_bdn.py
           import os, re
           
           fps = 23.976
@@ -664,9 +665,9 @@ jobs:
           xml_lines.append('</Events>\n</BDN>')
           with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
           EOF
-                        python3 generate_bdn.py
-                        rm -f generate_bdn.py pgs_times.log
-                        cd ../../../..
+                          python3 generate_bdn.py
+                          rm -f generate_bdn.py pgs_times.log
+                        )
                         
                         if [ -f "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" ]; then
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
@@ -743,8 +744,9 @@ jobs:
                       if [ -s "$TEMP_SUP" ]; then
                         ffmpeg -canvas_size 1920x1080 -i "$TEMP_SUP" -filter_complex "showinfo" -fps_mode vfr -c:v libwebp -lossless 0 -q:v 80 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
                         
-                        cd "hls_output/$TARGET_DIR/$PGS_DIR"
-                        cat << 'EOF' > generate_bdn.py
+                        (
+                          cd "hls_output/$TARGET_DIR/$PGS_DIR"
+                          cat << 'EOF' > generate_bdn.py
           import os, re
           
           fps = 23.976
@@ -790,9 +792,9 @@ jobs:
           xml_lines.append('</Events>\n</BDN>')
           with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
           EOF
-                        python3 generate_bdn.py
-                        rm -f generate_bdn.py pgs_times.log
-                        cd ../../../..
+                          python3 generate_bdn.py
+                          rm -f generate_bdn.py pgs_times.log
+                        )
                         
                         if [ -f "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" ]; then
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"

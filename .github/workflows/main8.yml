@@ -606,17 +606,15 @@ jobs:
                     VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                     
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" ]]; then
-                      echo "🔍 Detected PGS Subtitle ($lang). Native FFmpeg Extraction (1920x1080 Flattened Sprites)..."
-                      PGS_DIR="subs_${index}_${lang:-und}"
+                      echo "🔍 Detected PGS Subtitle (${lang:-unknown}). Native FFmpeg Extraction (1920x1080 Flattened Sprites)..."
+                      PGS_DIR="subs_${index}_${lang:-unknown}"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
-                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
-                      
-                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
-                      
-                      if [ -s "$TEMP_SUP" ]; then
-                        # Generate flattened WebP sprites + timing logs natively via FFmpeg
-                        ffmpeg -canvas_size 1920x1080 -i "$TEMP_SUP" -filter_complex "showinfo" -fps_mode vfr -c:v libwebp -lossless 0 -q:v 80 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
-                        
+
+                      # Extract directly from MKV to preserve absolute PTS. Force yuva420p and lossless WebP for reliable blank frame sizes.
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -canvas_size 1920x1080 -i "$VIDEO_FILE" -map "0:$index" -vf "showinfo" -fps_mode vfr -pix_fmt yuva420p -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+
+                      # Verify images were actually generated before running Python
+                      if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                         (
                           cd "hls_output/$TARGET_DIR/$PGS_DIR"
                           cat << 'EOF' > generate_bdn.py
@@ -631,7 +629,7 @@ jobs:
           with open("pgs_times.log", "r") as f:
               for line in f:
                   if "pts_time:" in line:
-                      match = re.search(r'pts_time:([\d\.]+)', line)
+                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
                       if match: frames.append(float(match.group(1)))
                       
           xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
@@ -644,7 +642,7 @@ jobs:
               if not os.path.exists(img_file): continue
               
               size = os.path.getsize(img_file)
-              is_blank = size < 800  # A fully transparent 1920x1080 WebP compresses to ~50 bytes
+              is_blank = size < 1024 
               
               if not is_blank:
                   if current_event_start != -1:
@@ -669,15 +667,16 @@ jobs:
                           rm -f generate_bdn.py pgs_times.log
                         )
                         
-                        if [ -f "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" ]; then
+                        if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
                         else
-                          echo "❌ Native FFmpeg extraction failed to produce XML."
+                          echo "❌ FFmpeg extraction produced empty XML (no visible events)."
+                          rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                         fi
-                        rm -f "$TEMP_SUP"
                       else
-                        echo "❌ FFmpeg failed to extract the raw SUP stream."
+                        echo "❌ FFmpeg failed to extract the PGS stream to images."
+                        rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                       fi
                       continue
                     fi
@@ -738,12 +737,11 @@ jobs:
                       echo "🔍 Extracting untagged PGS via Native FFmpeg (1920x1080 Flattened Sprites)..."
                       PGS_DIR="subs_${index}_unknown"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
-                      TEMP_SUP="hls_output/$TARGET_DIR/temp_${index}.sup"
-                      
-                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -map "0:$index" -c:s copy "$TEMP_SUP" >/dev/null 2>&1 || true
-                      if [ -s "$TEMP_SUP" ]; then
-                        ffmpeg -canvas_size 1920x1080 -i "$TEMP_SUP" -filter_complex "showinfo" -fps_mode vfr -c:v libwebp -lossless 0 -q:v 80 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
-                        
+
+                      # Extract directly from MKV to preserve absolute PTS. Force yuva420p and lossless WebP for reliable blank frame sizes.
+                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -canvas_size 1920x1080 -i "$VIDEO_FILE" -map "0:$index" -vf "showinfo" -fps_mode vfr -pix_fmt yuva420p -c:v libwebp -lossless 1 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+
+                      if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                         (
                           cd "hls_output/$TARGET_DIR/$PGS_DIR"
                           cat << 'EOF' > generate_bdn.py
@@ -758,7 +756,7 @@ jobs:
           with open("pgs_times.log", "r") as f:
               for line in f:
                   if "pts_time:" in line:
-                      match = re.search(r'pts_time:([\d\.]+)', line)
+                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
                       if match: frames.append(float(match.group(1)))
                       
           xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
@@ -771,7 +769,7 @@ jobs:
               if not os.path.exists(img_file): continue
               
               size = os.path.getsize(img_file)
-              is_blank = size < 800
+              is_blank = size < 1024 
               
               if not is_blank:
                   if current_event_start != -1:
@@ -796,16 +794,17 @@ jobs:
                           rm -f generate_bdn.py pgs_times.log
                         )
                         
-                        if [ -f "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml" ]; then
+                        if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                           echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
                         else
-                          echo "❌ Native FFmpeg extraction failed to produce XML."
+                          echo "❌ FFmpeg extraction produced empty XML (no visible events)."
+                          rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                         fi
-                        rm -f "$TEMP_SUP"
                         break
                       else
-                        echo "❌ FFmpeg failed to extract the raw untagged SUP stream."
+                        echo "❌ FFmpeg failed to extract the untagged PGS stream to images."
+                        rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                       fi
                       continue
                     fi

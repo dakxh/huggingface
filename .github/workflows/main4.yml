@@ -627,7 +627,7 @@ jobs:
                 fi
               fi
             done
-            HF_BASE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('https://huggingface.co/buckets/${HF_ANIME_BUCKET}/${TARGET_DIR}/', safe=':/'))")
+            HF_BASE=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=':/'))" "https://huggingface.co/buckets/${HF_ANIME_BUCKET}/${TARGET_DIR}/")
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} + || true
             
             HAS_SUBS="false"; echo "" >> "hls_output/$TARGET_DIR/master.m3u8"

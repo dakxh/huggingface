@@ -501,7 +501,7 @@ jobs:
                   hi|hin|hindi) DISPLAY_LANG="Hindi" ;;
                   te|tel|telugu) DISPLAY_LANG="Telugu" ;;
                   ja|jap|jpn|japan|japanese) DISPLAY_LANG="Japanese" ;;
-                  *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
+                  *) continue ;; 
                 esac
                 if [[ "$A_CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then
                   AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX 512k -threads 0 -filter:a:$A_IDX aformat=channel_layouts=5.1|stereo,loudnorm=I=-16:LRA=11:TP=-1.5  "

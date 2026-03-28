@@ -167,7 +167,7 @@ jobs:
           s_guess = g.get('season', 1)
           e_guess = g.get('episode')
           
-          folder_season_match = re.search(r'(?i)[ (\[-](?:Season|S)[ _.-]?(\d+)[ )\]-/]', filepath)
+          folder_season_match = re.search(r'(?i)[/\\](?:Season|S)[ _.-]?(\d+)[/\\]', filepath)
           folder_season = int(folder_season_match.group(1)) if folder_season_match else None
 
           anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v0?)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\(|-)', clean_name)
@@ -461,16 +461,6 @@ jobs:
             
             mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
             FONTS_STR=""
-            
-            # --- FIX: Fetch existing Series Metadata to prevent overwrites ---
-            if [ ! -f "hls_output/$BASE_DIR/metadata.json" ]; then
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $HF_TOKEN" -L "https://huggingface.co/buckets/$HF_ANIME_BUCKET/resolve/$BASE_DIR/metadata.json")
-              if [ "$HTTP_STATUS" == "200" ]; then
-                echo "📥 Existing Series Metadata found! Downloading for merge..."
-                curl -s -H "Authorization: Bearer $HF_TOKEN" -L -o "hls_output/$BASE_DIR/metadata.json" "https://huggingface.co/buckets/$HF_ANIME_BUCKET/resolve/$BASE_DIR/metadata.json"
-              fi
-            fi
-            # -----------------------------------------------------------------
             
             mkdir -p "hls_output/$TARGET_DIR/fonts"
             curl -sL "https://raw.githubusercontent.com/libass/JavascriptSubtitlesOctopus/refs/heads/master/assets/default.woff2" -o "hls_output/$TARGET_DIR/fonts/default.woff2" || true

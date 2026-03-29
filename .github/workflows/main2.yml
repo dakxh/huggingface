@@ -104,11 +104,49 @@ jobs:
           EOF
               python3 gdrive_sa_dl.py "$TARGET_LINK"
             fi
-          elif [[ "$TARGET_LINK" == http* ]]; then
-            curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
-            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
+          elif [[ "$TARGET_LINK" == http* ]] || [[ "$TARGET_LINK" == magnet:?* ]]; then
+            if [[ "$TARGET_LINK" == magnet:?* ]]; then
+              echo "🧲 Fetching metadata for Magnet link..."
+              aria2c --bt-metadata-only=true --bt-save-metadata=true "$TARGET_LINK" -d workspace/
+              TORRENT_FILE=$(find workspace -name "*.torrent" | head -n 1)
+            else
+              curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
+              TORRENT_FILE="workspace/payload.torrent"
+            fi
+            
+            cat << 'EOF' > filter_torrent.py
+          import sys, subprocess, re
+          
+          torrent_file = sys.argv[1]
+          res = subprocess.run(['aria2c', '-S', torrent_file], capture_output=True, text=True)
+          
+          ignore_patterns = [
+              "NCOP", "NCED", "Teaser", "S00", "Special OP", "Special ED",
+              "/Trailers/", "/New folder/", "/Specials/", "/Extra/", "/Extras/", 
+              "/Jujutsu Kaisen 0/", "/NCOP & NCED/", "/Special/", "/Other/", "OP -", "ED -", "_Daze_"
+          ]
+          
+          indices = []
+          for line in res.stdout.splitlines():
+              m = re.match(r'^\s*(\d+)\|(.+)$', line)
+              if m:
+                  idx, path = m.group(1), m.group(2)
+                  if not any(pat.lower() in path.lower() for pat in ignore_patterns):
+                      indices.append(idx)
+          
+          print(",".join(indices))
+          EOF
+            
+            INDICES=$(python3 filter_torrent.py "$TORRENT_FILE")
+            
+            if [ -n "$INDICES" ]; then
+              echo "✅ Downloading selected indices: $INDICES"
+              aria2c --select-file="$INDICES" --bt-stop-timeout=600 --timeout=600 --seed-time=0 "$TORRENT_FILE" -d workspace/
+            else
+              echo "⚠️ All files in the torrent matched the ignore list. Nothing to download."
+            fi
           else
-            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
+            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 "$TARGET_LINK" -d workspace/
           fi
           
           while read -u 9 ZIP_FILE; do unzip -q -o "$ZIP_FILE" -d workspace/; rm "$ZIP_FILE"; done 9< <(find workspace -type f -name "*.zip")

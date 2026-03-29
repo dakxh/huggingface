@@ -1,4 +1,4 @@
-name: movie-cleanup
+name: Movie-cleanup
 
 on:
   workflow_dispatch:
@@ -437,8 +437,8 @@ jobs:
             AUDIO_ENCODING=""
             A_IDX=0; AUDIO_SED_CMDS=""
             
-            LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
-            AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese)([^a-z]|$)"
+            LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ko|kor|korean)([^a-z]|$)"
+            AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean)([^a-z]|$)"
             DETECTED_AUDIO=""; DETECTED_SUBS=""
             
             while IFS=',' read -r index ctype lang title; do
@@ -453,6 +453,7 @@ jobs:
                     hi|hin|hindi) DISPLAY_LANG="Hindi" ;;
                     te|tel|telugu) DISPLAY_LANG="Telugu" ;;
                     ja|jap|jpn|japan|japanese) DISPLAY_LANG="Japanese" ;;
+                    ko|kor|korean) DISPLAY_LANG="Korean" ;;
                     *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                   esac
 
@@ -530,12 +531,13 @@ jobs:
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             
             # REMOVED GLOBAL -swr_opts FLAG
-            if ! ffmpeg -nostdin -filter_threads 4 -fflags +genpts -i "$VIDEO_FILE" \
+            if ! ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 \
               -max_muxing_queue_size 9999 -f hls -hls_segment_type mpegts \
               -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
+              -shortest \
               "hls_output/$TARGET_DIR/stream_%v.m3u8"; then
               echo "❌ FFMPEG CRASHED! Skipping to next file..."; continue
             fi
@@ -589,6 +591,7 @@ jobs:
                           hi|hin|hindi) SUB_LANG="Hindi" ;;
                           te|tel|telugu) SUB_LANG="Telugu" ;;
                           ja|jap|jpn|japan|japanese) SUB_LANG="Japanese" ;;
+                          ko|kor|korean) SUB_LANG="Korean" ;;
                           *) [ -n "$lang" ] && SUB_LANG="$(echo "$lang" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                         esac
 
@@ -658,13 +661,17 @@ jobs:
 
             python metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "${DETECTED_AUDIO:-und}" "${DETECTED_SUBS:-}" "$IS_IMAX" "$IS_HDR" "$VARIATION" "$RESOLUTION"
 
+            # 🔥 NEW: Delete the massive original source file to free up runner disk space
+            echo "🗑️ Discarding original file to reclaim disk space: $VIDEO_FILE"
+            rm -f "$VIDEO_FILE"
+
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
           
           if [ ! -d "hls_output" ] || [ -z "$(ls -A hls_output)" ]; then
             echo "❌ CRITICAL ERROR: hls_output is empty. Processing failed."
             exit 1
           fi
-
+          
       - name: Sync Output to Storage Bucket
         if: env.found == 'true'
         env:

@@ -427,8 +427,8 @@ jobs:
             AUDIO_ENCODING=""
             A_IDX=0; AUDIO_SED_CMDS=""
             
-            LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu)([^a-z]|$)"
-            AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese)([^a-z]|$)"
+            LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ko|kor|korean)([^a-z]|$)"
+            AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean)([^a-z]|$)"
             DETECTED_AUDIO=""; DETECTED_SUBS=""
             
             while IFS=',' read -r index ctype lang title; do
@@ -443,6 +443,7 @@ jobs:
                     hi|hin|hindi) DISPLAY_LANG="Hindi" ;;
                     te|tel|telugu) DISPLAY_LANG="Telugu" ;;
                     ja|jap|jpn|japan|japanese) DISPLAY_LANG="Japanese" ;;
+                    ko|kor|korean) DISPLAY_LANG="Korean" ;;
                     *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                   esac
 
@@ -580,6 +581,7 @@ jobs:
                           hi|hin|hindi) SUB_LANG="Hindi" ;;
                           te|tel|telugu) SUB_LANG="Telugu" ;;
                           ja|jap|jpn|japan|japanese) SUB_LANG="Japanese" ;;
+                          ko|kor|korean) SUB_LANG="Korean" ;;
                           *) [ -n "$lang" ] && SUB_LANG="$(echo "$lang" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                         esac
 
@@ -648,6 +650,10 @@ jobs:
             find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
 
             python metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "${DETECTED_AUDIO:-und}" "${DETECTED_SUBS:-}" "$IS_IMAX" "$IS_HDR" "$VARIATION" "$RESOLUTION"
+
+            # 🔥 NEW: Delete the massive original source file to free up runner disk space
+            echo "🗑️ Discarding original file to reclaim disk space: $VIDEO_FILE"
+            rm -f "$VIDEO_FILE"
 
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
           

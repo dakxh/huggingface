@@ -465,15 +465,15 @@ jobs:
                     if [[ "$IS_STEREO" -eq 0 ]]; then TARGET_BITRATE_DISP="512kbps"; else TARGET_BITRATE_DISP="${DISPLAY_BITRATE}"; [[ "$TARGET_BITRATE_DISP" == "Original" ]] && TARGET_BITRATE_DISP="256kbps"; fi
                     
                     AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
-                    # INJECTED SOXR DIRECTLY INTO ARESAMPLE
-                    if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -threads 0 -filter:a:$A_IDX aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr,apad "
-                    else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -threads 0 -filter:a:$A_IDX aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr,apad "; fi
+                    # FRONT-LOADED APAD FOR EOF HANGS
+                    if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
+                    else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "; fi
                     AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
                     
                     AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
-                    # INJECTED SOXR DIRECTLY INTO ARESAMPLE
-                    if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -threads 0 -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr,apad "
-                    else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -threads 0 -filter:a:$A_IDX acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr,apad "; fi
+                    # FRONT-LOADED APAD FOR EOF HANGS
+                    if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
+                    else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr "; fi
                     AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"M_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
                     DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
                   fi
@@ -505,26 +505,30 @@ jobs:
                 if [[ "$IS_STEREO" -eq 0 ]]; then TARGET_BITRATE_DISP="512kbps"; else TARGET_BITRATE_DISP="${DISPLAY_BITRATE}"; [[ "$TARGET_BITRATE_DISP" == "Original" ]] && TARGET_BITRATE_DISP="256kbps"; fi
                 
                 AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
-                # INJECTED SOXR DIRECTLY INTO ARESAMPLE
-                if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -threads 0 -filter:a:$A_IDX aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr,apad "
-                else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -threads 0 -filter:a:$A_IDX aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr,apad "; fi
+                # FRONT-LOADED APAD FOR EOF HANGS
+                if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
+                else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "; fi
                 AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
                 
                 AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
-                # INJECTED SOXR DIRECTLY INTO ARESAMPLE
-                if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -threads 0 -filter:a:$A_IDX aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr,apad "
-                else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -threads 0 -filter:a:$A_IDX acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr,apad "; fi
+                # FRONT-LOADED APAD FOR EOF HANGS
+                if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
+                else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr "; fi
                 AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"M_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
               fi
             fi
             VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
             
-            V_DUR=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | head -n 1)            
+            # ⏱️ FIX: PRE-CALCULATE EXACT VIDEO DURATION TO PREVENT HANGING AT EOF
+            # First, try to get the exact duration of the primary video stream
+            V_DUR=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | head -n 1)
             
+            # Fallback: If the video stream duration is hidden, get the overall container duration
             if [[ -z "$V_DUR" || "$V_DUR" == "N/A" ]]; then
               V_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
-            fi           
+            fi
             
+            # REMOVED -shortest FLAG AND REPLACED WITH HARD DURATION CUTOFF -t "$V_DUR"
             if ! ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 \

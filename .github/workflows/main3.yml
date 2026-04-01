@@ -676,21 +676,18 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_BUCKET: ${{ secrets.HF_BUCKET }}
         run: |
-          # Extract the catalog to prevent it from uploading sequentially alongside the media batch
           mv hls_output/session_catalog.json ./session_catalog.json || true
           rm -f hls_output/*.torrent hls_output/*.zip hls_output/temp_* || true
           
           python3 -c "
           import os
-          from huggingface_hub import login, sync_bucket
+          from huggingface_hub import sync_bucket
           token = os.environ.get('HF_TOKEN')
           bucket = os.environ.get('HF_BUCKET')
           
-          print('🚀 Authenticating Hugging Face SDK...')
-          login(token=token)
-          
           print('⚡ Initiating ultra-fast Storage Bucket sync via Xet Deduplication...')
-          sync_bucket('./hls_output', f'hf://buckets/{bucket}')
+          # Pass the token directly into the function
+          sync_bucket('./hls_output', f'hf://buckets/{bucket}', token=token)
           "
           
           echo "✅ Bucket Sync completed successfully."

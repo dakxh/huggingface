@@ -685,23 +685,32 @@ jobs:
         if: env.found == 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_BUCKET: ${{ secrets.HF_BUCKET }}
+          HF_BUCKET: ${{ secrets.HF_BUCKET }} # Or HF_ANIME_BUCKET depending on the workflow
         run: |
-          # Extract the catalog to prevent it from uploading sequentially alongside the media batch
           mv hls_output/session_catalog.json ./session_catalog.json || true
           rm -f hls_output/*.torrent hls_output/*.zip hls_output/temp_* || true
           
           python3 -c "
           import os
-          from huggingface_hub import login, sync_bucket
+          from huggingface_hub import sync_bucket, batch_bucket_files
           token = os.environ.get('HF_TOKEN')
           bucket = os.environ.get('HF_BUCKET')
           
-          print('🚀 Authenticating Hugging Face SDK...')
-          login(token=token)
+          print('⚡ Initiating targeted Storage Bucket sync...')
           
-          print('⚡ Initiating ultra-fast Storage Bucket sync via Xet Deduplication...')
-          sync_bucket('./hls_output', f'hf://buckets/{bucket}')
+          # Iterate through generated items rather than scanning the whole root bucket
+          for item in os.listdir('./hls_output'):
+              local_path = os.path.join('./hls_output', item)
+              
+              if os.path.isdir(local_path):
+                  print(f'📤 Syncing directory: {item}...')
+                  # Targets a specific sub-path, preventing recursive root pagination
+                  sync_bucket(local_path, f'hf://buckets/{bucket}/{item}', token=token)
+                  
+              elif os.path.isfile(local_path):
+                  print(f'📤 Uploading standalone file: {item}...')
+                  # Fast atomic upload for standalone root files
+                  batch_bucket_files(bucket, add=[(local_path, item)], token=token)
           "
           
           echo "✅ Bucket Sync completed successfully."

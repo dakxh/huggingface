@@ -202,7 +202,7 @@ jobs:
             DETECTED_PGS=""
             
             while IFS=',' read -r index ctype codec lang; do
-              if [[ "$ctype" == "subtitle" && "$codec" == "hdmv_pgs_subtitle" ]]; then
+              if [[ "$ctype" == "subtitle" && "$codec" == "hdmv_pgs_subtitle" && ( "$lang" == "eng" || "$lang" == "en" || "$lang" == "und" ) ]]; then
                 echo "🔍 Detected PGS Subtitle ($lang). Extracting 1920x1080 Flattened Sprites..."
                 PGS_DIR="patch_output/subs_${index}_${lang}"
                 mkdir -p "$PGS_DIR"

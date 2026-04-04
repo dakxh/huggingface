@@ -1,0 +1,309 @@
+name: Retroactive PGS Patcher (Non-Destructive)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  process-queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7100
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free Up Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp
+          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
+
+      - name: Compile and Fetch from Discord
+        id: discord_fetch
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+        run: |
+          g++ discord_manager.cpp -o discord_manager -lcurl
+          
+          OUTPUT=$(./discord_manager "$DISCORD_TOKEN" "$CHANNEL_ID" fetch)
+          MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
+          TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
+          
+          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
+            echo "❌ API Error or No valid link found."
+            echo "found=false" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          echo "Target acquired: $TARGET_LINK"
+          echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
+          echo "TARGET_LINK=$TARGET_LINK" >> $GITHUB_ENV
+          echo "found=true" >> $GITHUB_ENV
+
+      - name: Download Payload
+        if: env.found == 'true'
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+        run: |
+          mkdir -p workspace
+          if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
+            if [[ "$TARGET_LINK" == *\&at=* ]] || [[ "$TARGET_LINK" == *confirm=t* ]]; then
+              cd workspace && curl -# -L -OJ "$TARGET_LINK" && cd ..
+            else
+              cat << 'EOF' > gdrive_sa_dl.py
+          import os, sys, re, json, requests
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import Request
+          link = sys.argv[1]
+          sa_info = json.loads(os.environ.get('GCP_SA_JSON'))
+          creds = service_account.Credentials.from_service_account_info(sa_info, scopes=['https://www.googleapis.com/auth/drive.readonly'])
+          creds.refresh(Request())
+          headers = {'Authorization': f'Bearer {creds.token}'}
+          match = re.search(r'(id=|/d/|folders/)([a-zA-Z0-9_-]+)', link)
+          def download_file(fid, fname):
+              with requests.get(f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media", headers=headers, stream=True) as r:
+                  r.raise_for_status()
+                  with open(os.path.join("workspace", fname), 'wb') as f:
+                      for chunk in r.iter_content(chunk_size=1024*1024*10):
+                          if chunk: f.write(chunk)
+          def process_node(fid):
+              res = requests.get(f"https://www.googleapis.com/drive/v3/files/{fid}?fields=name,mimeType", headers=headers).json()
+              if res.get('mimeType') == 'application/vnd.google-apps.folder':
+                  children = requests.get(f"https://www.googleapis.com/drive/v3/files?q='{fid}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)", headers=headers).json().get('files',[])
+                  for child in children:
+                      if child['mimeType'] == 'application/vnd.google-apps.folder': process_node(child['id'])
+                      else: download_file(child['id'], child['name'])
+              else: download_file(fid, res['name'])
+          process_node(match.group(2))
+          EOF
+              python gdrive_sa_dl.py "$TARGET_LINK"
+            fi
+          elif [[ "$TARGET_LINK" == http* ]]; then
+            curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
+            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
+          else
+            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
+          fi
+          while read -u 9 ZIP_FILE; do unzip -q -o "$ZIP_FILE" -d workspace/; rm "$ZIP_FILE"; done 9< <(find workspace -type f -name "*.zip")
+
+      - name: Generate Target Router
+        if: env.found == 'true'
+        run: |
+          cat << 'EOF' > routing.py
+          import os, sys, re
+          from guessit import guessit
+          file_path = sys.argv[1]
+          filename = os.path.basename(file_path)
+          g = guessit(filename)
+          title = str(g.get('title', '')).strip()
+          year_matches = list(re.finditer(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', filename))
+          if year_matches:
+              last_year_match = year_matches[-1]
+              raw_prefix = filename[:last_year_match.start()]
+              regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
+              if len(regex_title) > len(title): title = regex_title
+              year = last_year_match.group(1)
+          else: year = str(g.get('year', ''))
+          if not title: title = 'Unknown_Title'
+          title = title.title().replace(' ', '.')
+          quality_raw = str(g.get('screen_size', '')).lower()
+          if '4k' in quality_raw or '2160' in quality_raw or '3840' in quality_raw: resolution = '2160p'
+          elif '720' in quality_raw or '1280' in quality_raw: resolution = '720p'
+          else: resolution = '1080p'
+          is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
+          dynamic_range = 'HDR' if is_hdr else 'SDR'
+          is_imax = 'imax' in filename.lower()
+          imax_tag = '.IMAX' if is_imax else ''
+          variation_str = f"{resolution}{imax_tag}.{dynamic_range}"
+          
+          # Exact matching logic from main3.yml to ensure folder names align perfectly
+          base_dir = f"{title}.{year}.{variation_str}" if year else f"{title}.{variation_str}"
+          print(f"{base_dir}")
+          EOF
+
+          cat << 'EOF' > hf_patcher.py
+          import os, sys, json, urllib.parse, shutil
+          from huggingface_hub import HfApi, hf_hub_download
+          
+          target_dir = sys.argv[1]
+          pgs_folders_str = sys.argv[2]
+          token = os.environ.get('HF_TOKEN')
+          bucket = os.environ.get('HF_BUCKET')
+          
+          api = HfApi()
+          pgs_folders = [x.strip() for x in pgs_folders_str.split('|') if x.strip()]
+          
+          if not pgs_folders:
+              print("No PGS folders passed to patcher.")
+              sys.exit(0)
+              
+          metadata_repo_path = f"{target_dir}/metadata.json"
+          local_meta_path = "temp_metadata.json"
+          
+          print(f"📥 Downloading existing metadata from hf://buckets/{bucket}/{metadata_repo_path}")
+          try:
+              downloaded_file = hf_hub_download(repo_id=f"buckets/{bucket}", filename=metadata_repo_path, repo_type="dataset", token=token, local_dir=".")
+              shutil.move(downloaded_file, local_meta_path)
+          except Exception as e:
+              print(f"❌ Failed to download metadata.json. Is this movie in the bucket? Error: {e}")
+              sys.exit(1)
+              
+          with open(local_meta_path, 'r') as f:
+              metadata = json.load(f)
+              
+          base_url = f"https://huggingface.co/buckets/{bucket}/{urllib.parse.quote(target_dir)}"
+          if "pgs_overlays" not in metadata: metadata["pgs_overlays"] = []
+          existing_urls = [item.get("url") for item in metadata["pgs_overlays"]]
+          
+          for folder in pgs_folders:
+              folder_name = os.path.basename(folder)
+              xml_url = f"{base_url}/{urllib.parse.quote(folder_name)}/subs.xml"
+              
+              if xml_url not in existing_urls:
+                  try: lbl = folder_name.split('_', 2)[-1].capitalize()
+                  except: lbl = "Overlay"
+                  metadata["pgs_overlays"].append({"url": xml_url, "label": lbl})
+                  
+          with open(local_meta_path, 'w') as f: json.dump(metadata, f, indent=4)
+          
+          print("📤 Uploading patched metadata.json to Hugging Face...")
+          api.upload_file(path_or_fileobj=local_meta_path, path_in_repo=metadata_repo_path, repo_id=f"buckets/{bucket}", repo_type="dataset", token=token)
+          os.remove(local_meta_path)
+          
+          print("📤 Syncing new PGS asset folders...")
+          for folder in pgs_folders:
+              folder_name = os.path.basename(folder)
+              api.upload_folder(folder_path=folder, path_in_repo=f"{target_dir}/{folder_name}", repo_id=f"buckets/{bucket}", repo_type="dataset", token=token)
+              
+          print("✅ Atomic patch completed successfully!")
+          EOF
+
+      - name: Extract PGS and Patch Cloud Assets
+        if: env.found == 'true'
+        env:
+          HF_BUCKET: ${{ secrets.HF_BUCKET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          mkdir -p patch_output
+          
+          while read -u 9 VIDEO_FILE; do
+            echo "================================================================"
+            echo "🎬 SCANNING FOR PGS: $VIDEO_FILE"
+            
+            TARGET_DIR=$(python routing.py "$VIDEO_FILE")
+            echo "📁 Cloud Target Directory: $TARGET_DIR"
+            
+            STREAMS=$(ffprobe -v error -show_streams -of json "$VIDEO_FILE" | jq -r '.streams[] | [.index, .codec_type, .codec_name, (.tags.language // "und")] | @csv' | tr '[:upper:]' '[:lower:]' | tr -d '"')
+            DETECTED_PGS=""
+            
+            while IFS=',' read -r index ctype codec lang; do
+              if [[ "$ctype" == "subtitle" && "$codec" == "hdmv_pgs_subtitle" ]]; then
+                echo "🔍 Detected PGS Subtitle ($lang). Extracting 1920x1080 Flattened Sprites..."
+                PGS_DIR="patch_output/subs_${index}_${lang}"
+                mkdir -p "$PGS_DIR"
+                
+                ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=1920:1080,format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "$PGS_DIR/subs_%04d.webp" > "$PGS_DIR/pgs_times.log" 2>&1 || true
+                
+                if ls "$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
+                  (
+                    cd "$PGS_DIR"
+                    cat << 'EOF' > generate_bdn.py
+          import os, re
+          fps = 23.976
+          def secs_to_tc(secs):
+              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
+              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+          frames = []
+          with open("pgs_times.log", "r") as f:
+              for line in f:
+                  if "pts_time:" in line:
+                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
+                      if match: frames.append(float(match.group(1)))
+          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+          current_event_start = -1
+          current_image = None
+          for i, pts in enumerate(frames):
+              img_file = f"subs_{i+1:04d}.webp"
+              if not os.path.exists(img_file): continue
+              size = os.path.getsize(img_file)
+              is_blank = size < 1024 
+              if not is_blank:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>\n  </Event>')
+                  current_event_start = pts
+                  current_image = img_file
+              else:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="1920" Height="1080" X="0" Y="0">{current_image}</Graphic>\n  </Event>')
+                      current_event_start = -1; current_image = None
+                  os.remove(img_file)
+          xml_lines.append('</Events>\n</BDN>')
+          with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
+          EOF
+                    python generate_bdn.py
+                    rm -f generate_bdn.py pgs_times.log
+                  )
+                  if grep -q "<Event" "$PGS_DIR/subs.xml"; then
+                    DETECTED_PGS+="$PGS_DIR|"
+                    echo "✅ Successfully extracted flattened WebP Sprites for stream $index!"
+                  else
+                    echo "❌ Extracted XML is empty. Purging folder."
+                    rm -rf "$PGS_DIR"
+                  fi
+                else
+                  echo "❌ Extraction failed. Purging folder."
+                  rm -rf "$PGS_DIR"
+                fi
+              fi
+            done <<< "$STREAMS"
+            
+            if [ -n "$DETECTED_PGS" ]; then
+              echo "☁️ Executing Hugging Face Metadata Patch..."
+              python hf_patcher.py "$TARGET_DIR" "$DETECTED_PGS"
+            else
+              echo "⚠️ No valid PGS streams found to patch for this file."
+            fi
+
+            echo "🗑️ Discarding original file to reclaim disk space: $VIDEO_FILE"
+            rm -f "$VIDEO_FILE"
+            
+          done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
+
+      - name: Report Success to Discord
+        if: env.found == 'true' && success()
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          QUEUE_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
+        run: |
+          STATUS_MSG="✅ **PGS Patch Complete!** \n🎬 Target movies retroactively updated with sidecar image subtitles.\n🌐 The HLS streams and master manifests were kept safe."
+          ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CHANNEL_ID" delete "$MSG_ID"
+          ./discord_manager "$DISCORD_TOKEN" "$PING_CHANNEL_ID" send "$STATUS_MSG"
+
+      - name: Report Failure to Discord
+        if: env.found == 'true' && failure()
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
+        run: |
+          FAIL_MSG="❌ **PGS Patcher Failed!** \n🚨 Something crashed during the extraction or metadata sync.\n🔗 [View Action Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+          PAYLOAD=$(jq -n --arg content "$FAIL_MSG" '{content: $content}')
+          curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"

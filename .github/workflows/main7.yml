@@ -201,7 +201,7 @@ jobs:
             
             while IFS=',' read -r index ctype codec lang; do
               # English / Undefined Language filter applied here
-              if [[ "$ctype" == "subtitle" && "$codec" == "hdmv_pgs_subtitle" && ( "$lang" == "eng" || "$lang" == "en" || "$lang" == "und" ) ]]; then
+              if [[ "$ctype" == "subtitle" && "$codec" == "hdmv_pgs_subtitle" && ( "$lang" == "eng" || "$lang" == "en" || "$lang" == "english" || "$lang" == "und" ) ]]; then
                 echo "🔍 Detected English/Undef PGS Subtitle ($lang). Extracting 1920x1080 Flattened Sprites..."
                 PGS_DIR="patch_output/subs_${index}_${lang}"
                 mkdir -p "$PGS_DIR"

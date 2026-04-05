@@ -221,7 +221,7 @@ jobs:
             
             while IFS=',' read -r index ctype codec lang; do
               # Universal Graphical Subtitle Filter (PGS + VobSub) for English/Undef
-              if [[ "$ctype" == "subtitle" && ( "$codec" == "hdmv_pgs_subtitle" || "$codec" == "dvd_subtitle" ) && ( "$lang" == "eng" || "$lang" == "en" || "$lang" == "und" ) ]]; then
+              if [[ "$ctype" == "subtitle" && ( "$codec" == "hdmv_pgs_subtitle" || "$codec" == "dvd_subtitle" ) && ( "$lang" == "eng" || "$lang" == "en" || "$lang" == "english" || "$lang" == "und" ) ]]; then
                 echo "🔍 Detected English/Undef Graphical Subtitle ($codec - $lang). Extracting 1920x1080 Flattened Sprites..."
                 
                 # Append codec to folder name for Smart Labeling

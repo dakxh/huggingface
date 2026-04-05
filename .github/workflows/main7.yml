@@ -1,4 +1,4 @@
-name: Retroactive PGS Patcher (Non-Destructive)
+name: Retroactive Subtitle Patcher (PGS & VobSub)
 
 on:
   workflow_dispatch:
@@ -16,6 +16,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Free Up Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
       - name: Install Dependencies
         run: |
@@ -138,7 +149,7 @@ jobs:
           pgs_folders = [x.strip() for x in pgs_folders_str.split('|') if x.strip()]
           
           if not pgs_folders:
-              print("No PGS folders passed to patcher.")
+              print("No Image Subtitle folders passed to patcher.")
               sys.exit(0)
               
           metadata_repo_path = f"{target_dir}/metadata.json"
@@ -163,8 +174,17 @@ jobs:
               xml_url = f"{base_url}/{urllib.parse.quote(folder_name)}/subs.xml"
               
               if xml_url not in existing_urls:
-                  try: lbl = folder_name.split('_', 2)[-1].capitalize()
-                  except: lbl = "Overlay"
+                  # Smart Labeling based on the codec extracted
+                  parts = folder_name.split('_')
+                  lang_cap = parts[2].capitalize() if len(parts) > 2 else "Unknown"
+                  
+                  if "dvd_subtitle" in folder_name:
+                      lbl = f"{lang_cap} (VobSub)"
+                  elif "hdmv_pgs_subtitle" in folder_name:
+                      lbl = f"{lang_cap} (PGS)"
+                  else:
+                      lbl = f"{lang_cap} (Image)"
+                      
                   metadata["pgs_overlays"].append({"url": xml_url, "label": lbl})
                   
           with open(local_meta_path, 'w') as f: json.dump(metadata, f, indent=4)
@@ -173,7 +193,7 @@ jobs:
           batch_bucket_files(bucket, add=[(local_meta_path, metadata_repo_path)], token=token)
           os.remove(local_meta_path)
           
-          print("📤 Syncing new PGS asset folders...")
+          print("📤 Syncing new Image Asset folders...")
           for folder in pgs_folders:
               folder_name = os.path.basename(folder)
               sync_bucket(folder, f"hf://buckets/{bucket}/{target_dir}/{folder_name}", token=token)
@@ -181,7 +201,7 @@ jobs:
           print("✅ Atomic patch completed successfully!")
           EOF
 
-      - name: Extract PGS and Patch Cloud Assets
+      - name: Extract Graphical Subtitles and Patch Cloud Assets
         if: env.found == 'true'
         env:
           HF_BUCKET: ${{ secrets.HF_BUCKET }}
@@ -191,7 +211,7 @@ jobs:
           
           while read -u 9 VIDEO_FILE; do
             echo "================================================================"
-            echo "🎬 SCANNING FOR PGS: $VIDEO_FILE"
+            echo "🎬 SCANNING FOR GRAPHICAL SUBTITLES (PGS/VOBSUB): $VIDEO_FILE"
             
             TARGET_DIR=$(python routing.py "$VIDEO_FILE")
             echo "📁 Cloud Target Directory: $TARGET_DIR"
@@ -200,12 +220,15 @@ jobs:
             DETECTED_PGS=""
             
             while IFS=',' read -r index ctype codec lang; do
-              # English / Undefined Language filter applied here
-              if [[ "$ctype" == "subtitle" && "$codec" == "hdmv_pgs_subtitle" && ( "$lang" == "eng" || "$lang" == "en" || "$lang" == "english" || "$lang" == "und" ) ]]; then
-                echo "🔍 Detected English/Undef PGS Subtitle ($lang). Extracting 1920x1080 Flattened Sprites..."
-                PGS_DIR="patch_output/subs_${index}_${lang}"
+              # Universal Graphical Subtitle Filter (PGS + VobSub) for English/Undef
+              if [[ "$ctype" == "subtitle" && ( "$codec" == "hdmv_pgs_subtitle" || "$codec" == "dvd_subtitle" ) && ( "$lang" == "eng" || "$lang" == "en" || "$lang" == "und" ) ]]; then
+                echo "🔍 Detected English/Undef Graphical Subtitle ($codec - $lang). Extracting 1920x1080 Flattened Sprites..."
+                
+                # Append codec to folder name for Smart Labeling
+                PGS_DIR="patch_output/subs_${index}_${lang}_${codec}"
                 mkdir -p "$PGS_DIR"
                 
+                # The format=rgba bakes VobSub palettes seamlessly while scaling fixes 480p DVD sizes
                 ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=1920:1080,format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "$PGS_DIR/subs_%04d.webp" > "$PGS_DIR/pgs_times.log" 2>&1 || true
                 
                 if ls "$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
@@ -267,7 +290,7 @@ jobs:
               echo "☁️ Executing Hugging Face Metadata Patch..."
               python hf_patcher.py "$TARGET_DIR" "$DETECTED_PGS"
             else
-              echo "⚠️ No valid English/Undef PGS streams found to patch for this file."
+              echo "⚠️ No valid English Graphical streams found to patch for this file."
             fi
 
             echo "🗑️ Discarding original file to reclaim disk space: $VIDEO_FILE"
@@ -282,7 +305,7 @@ jobs:
           QUEUE_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          STATUS_MSG="✅ **PGS Patch Complete!** \n🎬 Target movies retroactively updated with sidecar image subtitles.\n🌐 The HLS streams and master manifests were kept safe."
+          STATUS_MSG="✅ **Graphical Subtitle Patch Complete!** \n🎬 Target movies retroactively updated with sidecar image subtitles (PGS/VobSub).\n🌐 The HLS streams and master manifests were kept safe."
           ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CHANNEL_ID" delete "$MSG_ID"
           ./discord_manager "$DISCORD_TOKEN" "$PING_CHANNEL_ID" send "$STATUS_MSG"
 
@@ -292,6 +315,6 @@ jobs:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          FAIL_MSG="❌ **PGS Patcher Failed!** \n🚨 Something crashed during the extraction or metadata sync.\n🔗 [View Action Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+          FAIL_MSG="❌ **Subtitle Patcher Failed!** \n🚨 Something crashed during the extraction or metadata sync.\n🔗 [View Action Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
           PAYLOAD=$(jq -n --arg content "$FAIL_MSG" '{content: $content}')
           curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"

@@ -127,15 +127,14 @@ jobs:
           EOF
 
           cat << 'EOF' > hf_patcher.py
-          import os, sys, json, urllib.parse, shutil
-          from huggingface_hub import HfApi, hf_hub_download
+          import os, sys, json, urllib.parse
+          from huggingface_hub import download_bucket_files, batch_bucket_files, sync_bucket
           
           target_dir = sys.argv[1]
           pgs_folders_str = sys.argv[2]
           token = os.environ.get('HF_TOKEN')
-          bucket = os.environ.get('HF_BUCKET') # e.g. "username/repo"
+          bucket = os.environ.get('HF_BUCKET')
           
-          api = HfApi()
           pgs_folders = [x.strip() for x in pgs_folders_str.split('|') if x.strip()]
           
           if not pgs_folders:
@@ -143,12 +142,11 @@ jobs:
               sys.exit(0)
               
           metadata_repo_path = f"{target_dir}/metadata.json"
-          local_meta_path = "temp_metadata.json"
+          local_meta_path = "./temp_metadata.json"
           
-          print(f"📥 Downloading existing metadata from dataset: {bucket}/{metadata_repo_path}")
+          print(f"📥 Downloading existing metadata from hf://buckets/{bucket}/{metadata_repo_path}")
           try:
-              downloaded_file = hf_hub_download(repo_id=bucket, filename=metadata_repo_path, repo_type="dataset", token=token, local_dir=".")
-              shutil.move(downloaded_file, local_meta_path)
+              download_bucket_files(bucket, files=[(metadata_repo_path, local_meta_path)], token=token)
           except Exception as e:
               print(f"❌ Failed to download metadata.json. Is this movie in the bucket? Error: {e}")
               sys.exit(1)
@@ -156,7 +154,7 @@ jobs:
           with open(local_meta_path, 'r') as f:
               metadata = json.load(f)
               
-          base_url = f"https://huggingface.co/datasets/{bucket}/resolve/main/{urllib.parse.quote(target_dir)}"
+          base_url = f"https://huggingface.co/buckets/{bucket}/{urllib.parse.quote(target_dir)}"
           if "pgs_overlays" not in metadata: metadata["pgs_overlays"] = []
           existing_urls = [item.get("url") for item in metadata["pgs_overlays"]]
           
@@ -171,14 +169,14 @@ jobs:
                   
           with open(local_meta_path, 'w') as f: json.dump(metadata, f, indent=4)
           
-          print("📤 Uploading patched metadata.json to Hugging Face...")
-          api.upload_file(path_or_fileobj=local_meta_path, path_in_repo=metadata_repo_path, repo_id=bucket, repo_type="dataset", token=token)
+          print("📤 Uploading patched metadata.json to Hugging Face Buckets...")
+          batch_bucket_files(bucket, add=[(local_meta_path, metadata_repo_path)], token=token)
           os.remove(local_meta_path)
           
           print("📤 Syncing new PGS asset folders...")
           for folder in pgs_folders:
               folder_name = os.path.basename(folder)
-              api.upload_folder(folder_path=folder, path_in_repo=f"{target_dir}/{folder_name}", repo_id=bucket, repo_type="dataset", token=token)
+              sync_bucket(folder, f"hf://buckets/{bucket}/{target_dir}/{folder_name}", token=token)
               
           print("✅ Atomic patch completed successfully!")
           EOF
@@ -269,7 +267,7 @@ jobs:
               echo "☁️ Executing Hugging Face Metadata Patch..."
               python hf_patcher.py "$TARGET_DIR" "$DETECTED_PGS"
             else
-              echo "⚠️ No valid English PGS streams found to patch for this file."
+              echo "⚠️ No valid English/Undef PGS streams found to patch for this file."
             fi
 
             echo "🗑️ Discarding original file to reclaim disk space: $VIDEO_FILE"

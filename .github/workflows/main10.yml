@@ -1,4 +1,4 @@
-name: Discord Torrent to HLS Pipeline (bucket edition)
+name: Discord Torrent to HLS Pipeline (pgs)
 
 on:
   workflow_dispatch:
@@ -184,7 +184,6 @@ jobs:
           elif '720' in quality_raw or '1280' in quality_raw:
               resolution = '720p'
           else:
-              # Defaults 1920x1080, 1920x800, 1920x960, and anything unknown to 1080p
               resolution = '1080p'
 
           is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
@@ -394,6 +393,82 @@ jobs:
           with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
           EOF
 
+          cat << 'EOF' > generate_bdn.py
+          import os, sys, re
+
+          target_dir = sys.argv[1]
+          fps_raw = os.environ.get('VID_FPS_RAW', '24000/1001')
+          try:
+              if '/' in fps_raw:
+                  n, d = map(float, fps_raw.split('/'))
+                  fps = n / d if d != 0 else 23.976
+              else:
+                  fps = float(fps_raw)
+          except:
+              fps = 23.976
+
+          vid_w = os.environ.get('VID_W', '1920')
+          vid_h = os.environ.get('VID_H', '1080')
+
+          def secs_to_tc(secs):
+              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
+              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+              
+          frames = []
+          log_path = os.path.join(target_dir, "pgs_times.log")
+          if not os.path.exists(log_path):
+              sys.exit(0)
+
+          with open(log_path, "r") as f:
+              for line in f:
+                  if "pts_time:" in line:
+                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
+                      if match: frames.append(float(match.group(1)))
+                      
+          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+
+          current_event_start = -1
+          current_image = None
+
+          for i, pts in enumerate(frames):
+              img_name = f"subs_{i+1:04d}.webp"
+              img_file = os.path.join(target_dir, img_name)
+              if not os.path.exists(img_file): continue
+              
+              size = os.path.getsize(img_file)
+              is_blank = size < 1024 
+              
+              if not is_blank:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                  current_event_start = pts
+                  current_image = img_name
+              else:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                      current_event_start = -1
+                      current_image = None
+                  os.remove(img_file)
+                  
+          xml_lines.append('</Events>\n</BDN>')
+          with open(os.path.join(target_dir, "subs.xml"), "w") as f: f.write('\n'.join(xml_lines))
+          os.remove(log_path)
+          EOF
+
+          cat << 'EOF' > detect_eng.py
+          import sys, re
+          try:
+              with open(sys.argv[1], 'r', encoding='utf-8', errors='ignore') as f: text = f.read().lower()
+              words = re.findall(r'\b[a-z]{2,5}\b', text)
+              eng = {'the','and','that','have','for','not','with','you','this','but','his','from','they','say','she','will','what','who','get','when','make','can','like','time','just','know','take','your','good','some','could','them','other','than','then','now','look','only','come','over','think','also','back','after','how','our','first','well','way','even','want','because','any','these','give','most','are','was','were'}
+              print('true' if sum(1 for w in words if w in eng) > 15 else 'false')
+          except: print('false')
+          EOF
+
       - name: Process Master Loop (Batch Parsing, FFmpeg, Metadata)
         if: env.found == 'true'
         env:
@@ -601,72 +676,10 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                       if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
-                        (
-                          cd "hls_output/$TARGET_DIR/$PGS_DIR"
-                          cat << 'EOF' > generate_bdn.py
-          import os, re
-
-          fps_raw = os.environ.get('VID_FPS_RAW', '24000/1001')
-          try:
-              if '/' in fps_raw:
-                  n, d = map(float, fps_raw.split('/'))
-                  fps = n / d if d != 0 else 23.976
-              else:
-                  fps = float(fps_raw)
-          except:
-              fps = 23.976
-
-          vid_w = os.environ.get('VID_W', '1920')
-          vid_h = os.environ.get('VID_H', '1080')
-
-          def secs_to_tc(secs):
-              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
-              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
-              
-          frames = []
-          with open("pgs_times.log", "r") as f:
-              for line in f:
-                  if "pts_time:" in line:
-                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
-                      if match: frames.append(float(match.group(1)))
-                      
-          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
-
-          current_event_start = -1
-          current_image = None
-
-          for i, pts in enumerate(frames):
-              img_file = f"subs_{i+1:04d}.webp"
-              if not os.path.exists(img_file): continue
-              
-              size = os.path.getsize(img_file)
-              is_blank = size < 1024 
-              
-              if not is_blank:
-                  if current_event_start != -1:
-                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
-                      xml_lines.append('  </Event>')
-                  current_event_start = pts
-                  current_image = img_file
-              else:
-                  if current_event_start != -1:
-                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
-                      xml_lines.append('  </Event>')
-                      current_event_start = -1
-                      current_image = None
-                  os.remove(img_file)
-                  
-          xml_lines.append('</Events>\n</BDN>')
-          with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
-          EOF
-                          export VID_FPS_RAW="${VID_FPS_RAW}"
-                          export VID_W="${VID_W}"
-                          export VID_H="${VID_H}"
-                          python3 generate_bdn.py
-                          rm -f generate_bdn.py pgs_times.log
-                        )
+                        export VID_FPS_RAW="${VID_FPS_RAW}"
+                        export VID_W="${VID_W}"
+                        export VID_H="${VID_H}"
+                        python3 generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
                         
                         if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
@@ -719,16 +732,7 @@ jobs:
             
             if [[ "$HAS_SUBS" == "false" && -z "$DETECTED_PGS" ]]; then
               echo "⚠️ No matching subtitles found. Scanning unidentified tracks..."
-              cat << 'EOF' > detect_eng.py
-          import sys, re
-          try:
-              with open(sys.argv[1], 'r', encoding='utf-8', errors='ignore') as f: text = f.read().lower()
-              words = re.findall(r'\b[a-z]{2,5}\b', text)
-              eng = {'the','and','that','have','for','not','with','you','this','but','his','from','they','say','she','will','what','who','get','when','make','can','like','time','just','know','take','your','good','some','could','them','other','than','then','now','look','only','come','over','think','also','back','after','how','our','first','well','way','even','want','because','any','these','give','most','are','was','were'}
-              print('true' if sum(1 for w in words if w in eng) > 15 else 'false')
-          except: print('false')
-          EOF
-
+              
               while IFS=',' read -r index ctype lang title; do
                 if [[ "$ctype" == "subtitle" ]]; then
                   SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
@@ -742,72 +746,10 @@ jobs:
                       ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                       if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
-                        (
-                          cd "hls_output/$TARGET_DIR/$PGS_DIR"
-                          cat << 'EOF' > generate_bdn.py
-          import os, re
-
-          fps_raw = os.environ.get('VID_FPS_RAW', '24000/1001')
-          try:
-              if '/' in fps_raw:
-                  n, d = map(float, fps_raw.split('/'))
-                  fps = n / d if d != 0 else 23.976
-              else:
-                  fps = float(fps_raw)
-          except:
-              fps = 23.976
-
-          vid_w = os.environ.get('VID_W', '1920')
-          vid_h = os.environ.get('VID_H', '1080')
-
-          def secs_to_tc(secs):
-              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
-              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
-              
-          frames = []
-          with open("pgs_times.log", "r") as f:
-              for line in f:
-                  if "pts_time:" in line:
-                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
-                      if match: frames.append(float(match.group(1)))
-                      
-          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
-
-          current_event_start = -1
-          current_image = None
-
-          for i, pts in enumerate(frames):
-              img_file = f"subs_{i+1:04d}.webp"
-              if not os.path.exists(img_file): continue
-              
-              size = os.path.getsize(img_file)
-              is_blank = size < 1024 
-              
-              if not is_blank:
-                  if current_event_start != -1:
-                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
-                      xml_lines.append('  </Event>')
-                  current_event_start = pts
-                  current_image = img_file
-              else:
-                  if current_event_start != -1:
-                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
-                      xml_lines.append('  </Event>')
-                      current_event_start = -1
-                      current_image = None
-                  os.remove(img_file)
-                  
-          xml_lines.append('</Events>\n</BDN>')
-          with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
-          EOF
-                          export VID_FPS_RAW="${VID_FPS_RAW}"
-                          export VID_W="${VID_W}"
-                          export VID_H="${VID_H}"
-                          python3 generate_bdn.py
-                          rm -f generate_bdn.py pgs_times.log
-                        )
+                        export VID_FPS_RAW="${VID_FPS_RAW}"
+                        export VID_W="${VID_W}"
+                        export VID_H="${VID_H}"
+                        python3 generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
                         
                         if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
                           DETECTED_PGS+="${PGS_DIR}/subs.xml|"
@@ -828,7 +770,7 @@ jobs:
                     TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
                     if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1; then
                       if [ -s "$TEMP_VTT" ]; then
-                        IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")
+                        IS_ENGLISH=$(python3 detect_eng.py "$TEMP_VTT")
                         if [[ "$IS_ENGLISH" == "true" ]]; then
                           sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$TEMP_VTT"
                           VTT_BASENAME="subs_${index}_eng.vtt"; M3U8_BASENAME="subs_${index}_eng.m3u8"
@@ -843,7 +785,6 @@ jobs:
                   fi
                 fi
               done <<< "$STREAMS"
-              rm -f detect_eng.py
             fi
             
             if [[ "$HAS_SUBS" == "true" ]]; then VIDEO_MANIFEST_INJECTION=$(echo "$VIDEO_MANIFEST_INJECTION" | sed 's/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/'); fi

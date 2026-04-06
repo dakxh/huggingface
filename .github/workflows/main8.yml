@@ -1,4 +1,4 @@
-name: Movie - PGS + vobsub
+name: Discord Torrent to HLS Pipeline (pgs and vobsub)
 
 on:
   workflow_dispatch:

@@ -1,4 +1,4 @@
-name: Discord Torrent to HLS Pipeline (pgs)
+name: Discord Torrent to HLS Pipeline (bucket edition)
 
 on:
   workflow_dispatch:

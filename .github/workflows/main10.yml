@@ -427,12 +427,15 @@ jobs:
             echo "📁 Final Safe HF Directory: $TARGET_DIR"
             mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
 
-            # 📏 DYNAMIC RESOLUTION PROBING FOR SMART SCALING
+            # 📏 DYNAMIC RESOLUTION & FPS PROBING FOR SMART SCALING
             VID_RES=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null | head -n 1)
             VID_W=$(echo "$VID_RES" | cut -d'x' -f1)
             VID_H=$(echo "$VID_RES" | cut -d'x' -f2)
             [ -z "$VID_W" ] && VID_W="1920"
             [ -z "$VID_H" ] && VID_H="1080"
+            
+            VID_FPS_RAW=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | head -n 1)
+            [ -z "$VID_FPS_RAW" ] && VID_FPS_RAW="24000/1001"
             
             VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
             if [[ "$VIDEO_CODEC" == "hevc" ]]; then V_TAG="-tag:v hvc1"; else V_TAG="-tag:v avc1"; fi
@@ -591,7 +594,7 @@ jobs:
                     
                     # --- NATIVE IMAGE OVERLAY EXTRACTION (PGS & VOBSUB) ---
                     if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" || "$SUB_CODEC" == "dvd_subtitle" ]]; then
-                      echo "🔍 Detected Graphical Subtitle (${lang:-unknown}). Dynamically Scaling to ${VID_W}x${VID_H}..."
+                      echo "🔍 Detected Graphical Subtitle (${lang:-unknown}). Dynamically Scaling to ${VID_W}x${VID_H} at ${VID_FPS_RAW} FPS..."
                       PGS_DIR="subs_${index}_${lang:-unknown}"
                       mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
@@ -600,52 +603,67 @@ jobs:
                       if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                         (
                           cd "hls_output/$TARGET_DIR/$PGS_DIR"
-                          cat << EOF > generate_bdn.py
-import os, re
+                          cat << 'EOF' > generate_bdn.py
+          import os, re
 
-fps = 23.976
-def secs_to_tc(secs):
-    h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
-    return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
-    
-frames = []
-with open("pgs_times.log", "r") as f:
-    for line in f:
-        if "pts_time:" in line:
-            match = re.search(r'pts_time:\s*([\d\.]+)', line)
-            if match: frames.append(float(match.group(1)))
-            
-xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+          fps_raw = os.environ.get('VID_FPS_RAW', '24000/1001')
+          try:
+              if '/' in fps_raw:
+                  n, d = map(float, fps_raw.split('/'))
+                  fps = n / d if d != 0 else 23.976
+              else:
+                  fps = float(fps_raw)
+          except:
+              fps = 23.976
 
-current_event_start = -1
-current_image = None
+          vid_w = os.environ.get('VID_W', '1920')
+          vid_h = os.environ.get('VID_H', '1080')
 
-for i, pts in enumerate(frames):
-    img_file = f"subs_{i+1:04d}.webp"
-    if not os.path.exists(img_file): continue
-    
-    size = os.path.getsize(img_file)
-    is_blank = size < 1024 
-    
-    if not is_blank:
-        if current_event_start != -1:
-            xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-            xml_lines.append(f'    <Graphic Width="${VID_W}" Height="${VID_H}" X="0" Y="0">{current_image}</Graphic>')
-            xml_lines.append('  </Event>')
-        current_event_start = pts
-        current_image = img_file
-    else:
-        if current_event_start != -1:
-            xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-            xml_lines.append(f'    <Graphic Width="${VID_W}" Height="${VID_H}" X="0" Y="0">{current_image}</Graphic>')
-            xml_lines.append('  </Event>')
-            current_event_start = -1
-            current_image = None
-        os.remove(img_file)
-        
-xml_lines.append('</Events>\n</BDN>')
-with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
-EOF
+          def secs_to_tc(secs):
+              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
+              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+              
+          frames = []
+          with open("pgs_times.log", "r") as f:
+              for line in f:
+                  if "pts_time:" in line:
+                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
+                      if match: frames.append(float(match.group(1)))
+                      
+          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+
+          current_event_start = -1
+          current_image = None
+
+          for i, pts in enumerate(frames):
+              img_file = f"subs_{i+1:04d}.webp"
+              if not os.path.exists(img_file): continue
+              
+              size = os.path.getsize(img_file)
+              is_blank = size < 1024 
+              
+              if not is_blank:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                  current_event_start = pts
+                  current_image = img_file
+              else:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                      current_event_start = -1
+                      current_image = None
+                  os.remove(img_file)
+                  
+          xml_lines.append('</Events>\n</BDN>')
+          with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
+          EOF
+                          export VID_FPS_RAW="${VID_FPS_RAW}"
+                          export VID_W="${VID_W}"
+                          export VID_H="${VID_H}"
                           python3 generate_bdn.py
                           rm -f generate_bdn.py pgs_times.log
                         )
@@ -726,52 +744,67 @@ EOF
                       if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                         (
                           cd "hls_output/$TARGET_DIR/$PGS_DIR"
-                          cat << EOF > generate_bdn.py
-import os, re
+                          cat << 'EOF' > generate_bdn.py
+          import os, re
 
-fps = 23.976
-def secs_to_tc(secs):
-    h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
-    return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
-    
-frames = []
-with open("pgs_times.log", "r") as f:
-    for line in f:
-        if "pts_time:" in line:
-            match = re.search(r'pts_time:\s*([\d\.]+)', line)
-            if match: frames.append(float(match.group(1)))
-            
-xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+          fps_raw = os.environ.get('VID_FPS_RAW', '24000/1001')
+          try:
+              if '/' in fps_raw:
+                  n, d = map(float, fps_raw.split('/'))
+                  fps = n / d if d != 0 else 23.976
+              else:
+                  fps = float(fps_raw)
+          except:
+              fps = 23.976
 
-current_event_start = -1
-current_image = None
+          vid_w = os.environ.get('VID_W', '1920')
+          vid_h = os.environ.get('VID_H', '1080')
 
-for i, pts in enumerate(frames):
-    img_file = f"subs_{i+1:04d}.webp"
-    if not os.path.exists(img_file): continue
-    
-    size = os.path.getsize(img_file)
-    is_blank = size < 1024 
-    
-    if not is_blank:
-        if current_event_start != -1:
-            xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-            xml_lines.append(f'    <Graphic Width="${VID_W}" Height="${VID_H}" X="0" Y="0">{current_image}</Graphic>')
-            xml_lines.append('  </Event>')
-        current_event_start = pts
-        current_image = img_file
-    else:
-        if current_event_start != -1:
-            xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-            xml_lines.append(f'    <Graphic Width="${VID_W}" Height="${VID_H}" X="0" Y="0">{current_image}</Graphic>')
-            xml_lines.append('  </Event>')
-            current_event_start = -1
-            current_image = None
-        os.remove(img_file)
-        
-xml_lines.append('</Events>\n</BDN>')
-with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
-EOF
+          def secs_to_tc(secs):
+              h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
+              return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+              
+          frames = []
+          with open("pgs_times.log", "r") as f:
+              for line in f:
+                  if "pts_time:" in line:
+                      match = re.search(r'pts_time:\s*([\d\.]+)', line)
+                      if match: frames.append(float(match.group(1)))
+                      
+          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+
+          current_event_start = -1
+          current_image = None
+
+          for i, pts in enumerate(frames):
+              img_file = f"subs_{i+1:04d}.webp"
+              if not os.path.exists(img_file): continue
+              
+              size = os.path.getsize(img_file)
+              is_blank = size < 1024 
+              
+              if not is_blank:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                  current_event_start = pts
+                  current_image = img_file
+              else:
+                  if current_event_start != -1:
+                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
+                      xml_lines.append('  </Event>')
+                      current_event_start = -1
+                      current_image = None
+                  os.remove(img_file)
+                  
+          xml_lines.append('</Events>\n</BDN>')
+          with open("subs.xml", "w") as f: f.write('\n'.join(xml_lines))
+          EOF
+                          export VID_FPS_RAW="${VID_FPS_RAW}"
+                          export VID_W="${VID_W}"
+                          export VID_H="${VID_H}"
                           python3 generate_bdn.py
                           rm -f generate_bdn.py pgs_times.log
                         )

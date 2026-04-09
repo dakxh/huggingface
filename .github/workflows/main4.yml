@@ -22,13 +22,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install Dependencies
-        run: |
-          # Purged Wine, Mono, and Java. Standard lightweight Linux pipeline.
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp
-          
-          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
-          
       - name: Free Up Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -39,6 +32,14 @@ jobs:
           large-packages: true
           docker-images: true
           swap-storage: true
+
+      - name: Install Dependencies
+        run: |
+          # Purged Wine, Mono, and Java. Standard lightweight Linux pipeline.
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp
+          
+          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
+          
 
       - name: Set Base Title Env
         run: |

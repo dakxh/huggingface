@@ -326,14 +326,34 @@ jobs:
               show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'pgs_overlays': pgs_overlays_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
           else:
               show_meta = {'id': tmdb_id, 'type': 'anime', 'title': '', 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'average_duration': '0m', 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
-          if os.path.exists(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json'):
-              with open(f'hls_output/{target_dir if is_movie else base_dir}/metadata.json', 'r') as f: 
+          
+          target_meta_dir = target_dir if is_movie else base_dir
+          local_meta_path = f'hls_output/{target_meta_dir}/metadata.json'
+          
+          # 1. ATTEMPT CLOUD FETCH (Resolves cross-run state mismatch)
+          if not os.path.exists(local_meta_path):
+              cloud_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(target_meta_dir)}/metadata.json"
+              hf_token = os.environ.get('HF_TOKEN', '')
+              headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
+              try:
+                  r = requests.get(cloud_url, headers=headers, timeout=10)
+                  if r.status_code == 200:
+                      os.makedirs(os.path.dirname(local_meta_path), exist_ok=True)
+                      with open(local_meta_path, 'w') as f: 
+                          f.write(r.text)
+              except Exception: 
+                  pass # Fail gracefully; brand new series being uploaded for the first time
+                  
+          # 2. STANDARD LOCAL MERGE (Handles batch torrents in the exact same runner loop)
+          if os.path.exists(local_meta_path):
+              with open(local_meta_path, 'r') as f: 
                   prev = json.load(f)
                   if is_movie: show_meta.update(prev)
                   else:
                       prev['_total_secs'] = prev.get('_total_secs', 0.0)
                       prev['_ep_count'] = prev.get('_ep_count', 0)
                       show_meta.update(prev)
+
           def fetch_tmdb(endpoint):
               for key in [tmdb_key, tmdb_key_2]:
                   if not key: continue

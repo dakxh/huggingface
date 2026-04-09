@@ -122,9 +122,19 @@ jobs:
           res = subprocess.run(['aria2c', '-S', torrent_file], capture_output=True, text=True)
           
           ignore_patterns = [
-              "NCOP", "NCED", "Teaser", "S00", "Special OP", "Special ED", "Creditless", "/NC/",
-              "/Trailers/", "/New folder/", "/Specials/", "/Extra/", "/Extras/", 
-              "/Jujutsu Kaisen 0/", "/NCOP & NCED/", "/Special/", "/Other/", "OP -", "ED -", "_Daze_", "/[Anime Time] Soul Eater NOT!/"
+            "NCOP", "NCED", "Teaser", "S00", "Special OP", "Special ED", "Creditless", "/NC/",
+            "/Trailers/", "/New folder/", "/Specials/", "/Extra/", "/Extras/",
+            "/Jujutsu Kaisen 0/", "/NCOP & NCED/", "/Special/", "/Other/", "OP -", "ED -", "_Daze_",
+            "/[Anime Time] Soul Eater NOT!/", "Soul Eater NOT",
+            "Soul Eater - 001", "Soul Eater - 002", "Soul Eater - 003", "Soul Eater - 004",
+            "Soul Eater - 005", "Soul Eater - 006", "Soul Eater - 007", "Soul Eater - 008",
+            "Soul Eater - 009", "Soul Eater - 010", "Soul Eater - 011", "Soul Eater - 012",
+            "Soul Eater - 013", "Soul Eater - 014", "Soul Eater - 015", "Soul Eater - 016",
+            "Soul Eater - 017", "Soul Eater - 018", "Soul Eater - 019", "Soul Eater - 020",
+            "Soul Eater - 021", "Soul Eater - 022", "Soul Eater - 023", "Soul Eater - 024",
+            "Soul Eater - 025", "Soul Eater - 026", "Soul Eater - 027", "Soul Eater - 028",
+            "Soul Eater - 029", "Soul Eater - 030", "Soul Eater - 031", "Soul Eater - 032",
+            "Soul Eater - 033", "Soul Eater - 034"
           ]
           
           indices = []

@@ -15,7 +15,8 @@ jobs:
 
     steps:
       - name: Print custom trigger note
-        run: echo "Starting debug run: ${{ inputs.debug_note }}"
+        run: |
+          echo "Starting debug run: ${{ inputs.debug_note }}"
 
       # This step outputs standard Linux environment variables
       # sorting them alphabetically for easier reading in the logs

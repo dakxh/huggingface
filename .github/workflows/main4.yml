@@ -369,32 +369,8 @@ jobs:
               show_meta = {'id': tmdb_id, 'type': 'anime', 'title': '', 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'average_duration': '0m', 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
           
           target_meta_dir = target_dir if is_movie else base_dir
-          local_meta_path = f'hls_output/{target_meta_dir}/metadata.json'
           
-          # 1. ATTEMPT CLOUD FETCH (Resolves cross-run state mismatch)
-          if not os.path.exists(local_meta_path):
-              cloud_url = f"https://huggingface.co/buckets/{HF_ANIME_BUCKET}/resolve/{urllib.parse.quote(target_meta_dir)}/metadata.json"
-              hf_token = os.environ.get('HF_TOKEN', '')
-              headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
-              try:
-                  r = requests.get(cloud_url, headers=headers, timeout=10)
-                  if r.status_code == 200:
-                      os.makedirs(os.path.dirname(local_meta_path), exist_ok=True)
-                      with open(local_meta_path, 'w') as f: 
-                          f.write(r.text)
-              except Exception: 
-                  pass # Fail gracefully; brand new series being uploaded for the first time
-                  
-          # 2. STANDARD LOCAL MERGE (Handles batch torrents in the exact same runner loop)
-          if os.path.exists(local_meta_path):
-              with open(local_meta_path, 'r') as f: 
-                  prev = json.load(f)
-                  if is_movie: show_meta.update(prev)
-                  else:
-                      prev['_total_secs'] = prev.get('_total_secs', 0.0)
-                      prev['_ep_count'] = prev.get('_ep_count', 0)
-                      show_meta.update(prev)
-
+          # ---> INITIALIZE TMDB METADATA <---
           def fetch_tmdb(endpoint):
               for key in [tmdb_key, tmdb_key_2]:
                   if not key: continue
@@ -405,6 +381,7 @@ jobs:
                           return data
                   except: pass
               return {}
+              
           if (tmdb_key or tmdb_key_2) and tmdb_id != 0 and not show_meta.get('poster_url'):
               if is_movie:
                   res = fetch_tmdb(f'/movie/{tmdb_id}')
@@ -437,10 +414,22 @@ jobs:
           if not show_meta.get('title'):
               show_meta['title'] = base_dir.rsplit('.', 1)[0].replace('.', ' ').strip()
               if is_movie: show_meta['movie_title'] = show_meta['title']
+              
           if not is_movie:
-              show_meta['_total_secs'] += dur_seconds; show_meta['_ep_count'] += 1;
-              calc_dur_str = format_dur(show_meta['_total_secs'] / max(show_meta['_ep_count'], 1))
-              show_meta['average_duration'] = calc_dur_str
+              # ---> WRITE TO LOCAL BATCH LOG FOR JIT MERGER <---
+              batch_log_path = 'hls_output/local_batch_log.json'
+              try:
+                  with open(batch_log_path, 'r') as f: batch_log = json.load(f)
+              except: batch_log = {}
+              
+              if base_dir not in batch_log:
+                  batch_log[base_dir] = show_meta
+                  batch_log[base_dir]['episodes'] = []
+                  batch_log[base_dir]['_total_secs'] = 0.0
+                  batch_log[base_dir]['_ep_count'] = 0
+                  
+              batch_log[base_dir]['_total_secs'] += dur_seconds
+              batch_log[base_dir]['_ep_count'] += 1
               
               # ---> DYNAMIC SPECIAL NAMING <---
               ep_name = f'Episode {e_num}'
@@ -458,11 +447,12 @@ jobs:
                   if ep_res and ep_res.get('name'):
                       ep_name = ep_res['name']
                       
-              show_meta['episodes'] =[ep for ep in show_meta.get('episodes', []) if not (ep['season_number']==s_num and ep['episode_number']==e_num)]
-              show_meta['episodes'].append({'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'quality': resolution_str, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url})
-              show_meta['episodes'].sort(key=lambda x: (x['season_number'], x['episode_number']))
+              ep_entry = {'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'quality': resolution_str, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
               
-              with open(f'hls_output/{base_dir}/metadata.json', 'w') as f: json.dump(show_meta, f, indent=4)
+              batch_log[base_dir]['episodes'] = [ep for ep in batch_log[base_dir].get('episodes', []) if not (ep['season_number']==s_num and ep['episode_number']==e_num)]
+              batch_log[base_dir]['episodes'].append(ep_entry)
+              
+              with open(batch_log_path, 'w') as f: json.dump(batch_log, f, indent=4)
               
               ep_meta = {'id': show_meta['id'], 'series_title': show_meta['title'], 'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'original_filename': filename, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'pgs_overlays': pgs_overlays_final, 'fonts': fonts_final, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
@@ -954,7 +944,6 @@ jobs:
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) \
             ! -iname "*NCOP*" \
             ! -iname "*NCED*" \
-            ! -iname "*Creditless*" \
             ! -iname "*Special OP*" \
             ! -iname "*Special ED*" \
             ! -ipath "*/Trailers/*" \
@@ -962,9 +951,73 @@ jobs:
             ! -ipath "*/Specials/*" \
             ! -ipath "*/Extra/*" \
             ! -ipath "*/Extras/*" \
+            ! -ipath "*/Jujutsu Kaisen 0/*" \
             ! -ipath "*/NCOP & NCED/*" \
             ! -ipath "*/Special/*" \
             ! -ipath "*/Other/*")
+
+      - name: Just-In-Time (JIT) Metadata Merger
+        if: env.found == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_ANIME_TOKEN }}
+          HF_ANIME_BUCKET: ${{ secrets.HF_ANIME_BUCKET }}
+        run: |
+          python3 -c "
+          import os, json, requests, urllib.parse
+          
+          hf_token = os.environ.get('HF_TOKEN', '')
+          hf_bucket = os.environ.get('HF_ANIME_BUCKET', '')
+          headers = {'Authorization': f'Bearer {hf_token}'} if hf_token else {}
+          
+          batch_log_path = 'hls_output/local_batch_log.json'
+          if not os.path.exists(batch_log_path):
+              print('No local batch log found. Skipping JIT merge.')
+              exit(0)
+              
+          with open(batch_log_path, 'r') as f:
+              batch_log = json.load(f)
+              
+          def format_dur(secs): 
+              h, m = int(secs//3600), int((secs%3600)//60)
+              return f'{h}h{m}m' if h>0 else f'{m}m'
+              
+          for base_dir, new_meta in batch_log.items():
+              cloud_url = f'https://huggingface.co/buckets/{hf_bucket}/resolve/{urllib.parse.quote(base_dir)}/metadata.json'
+              
+              try:
+                  r = requests.get(cloud_url, headers=headers, timeout=10)
+                  if r.status_code == 200:
+                      cloud_meta = r.json()
+                      for key in ['title', 'overview', 'rating', 'year', 'poster_url', 'backdrop_url', 'id', 'source', 'quality', 'HDR']:
+                          if new_meta.get(key): cloud_meta[key] = new_meta[key]
+                      
+                      cloud_meta['_total_secs'] = cloud_meta.get('_total_secs', 0.0) + new_meta.get('_total_secs', 0.0)
+                      cloud_meta['_ep_count'] = cloud_meta.get('_ep_count', 0) + new_meta.get('_ep_count', 0)
+                      cloud_meta['average_duration'] = format_dur(cloud_meta['_total_secs'] / max(cloud_meta['_ep_count'], 1))
+                      
+                      cloud_episodes = cloud_meta.get('episodes', [])
+                      for new_ep in new_meta.get('episodes', []):
+                          cloud_episodes = [ep for ep in cloud_episodes if not (ep.get('season_number') == new_ep['season_number'] and ep.get('episode_number') == new_ep['episode_number'])]
+                          cloud_episodes.append(new_ep)
+                          
+                      cloud_episodes.sort(key=lambda x: (x.get('season_number', 0), x.get('episode_number', 0)))
+                      cloud_meta['episodes'] = cloud_episodes
+                      cloud_meta['date_added'] = new_meta.get('date_added', 0)
+                      
+                      final_meta = cloud_meta
+                  else:
+                      final_meta = new_meta
+                      final_meta['average_duration'] = format_dur(final_meta.get('_total_secs', 0.0) / max(final_meta.get('_ep_count', 1), 1))
+              except Exception as e:
+                  print(f'Error fetching {cloud_url}: {e}. Using local data.')
+                  final_meta = new_meta
+                  final_meta['average_duration'] = format_dur(final_meta.get('_total_secs', 0.0) / max(final_meta.get('_ep_count', 1), 1))
+                  
+              with open(f'hls_output/{base_dir}/metadata.json', 'w') as f:
+                  json.dump(final_meta, f, indent=4)
+                  
+          print('✅ JIT Metadata Merge completed.')
+          "
 
       - name: Sync Output to Storage Bucket
         if: env.found == 'true'
@@ -974,6 +1027,7 @@ jobs:
         run: |
           mv hls_output/session_catalog.json ./session_catalog.json || true
           rm -f hls_output/*.torrent hls_output/*.zip hls_output/temp_* || true
+          rm -f hls_output/local_batch_log.json || true
           
           python3 -c "
           import os, time

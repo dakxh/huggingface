@@ -111,7 +111,7 @@ jobs:
           res = subprocess.run(['aria2c', '-S', torrent_file], capture_output=True, text=True)
           
           ignore_patterns = [
-            "NCOP", "NCED", "Teaser", "S00", "Special OP", "Special ED", "Creditless", "/NC/",
+            "NCOP", "NCED", "Teaser", "Special OP", "Special ED", "Creditless", "/NC/",
             "/Trailers/", "/New folder/", "/Specials/", "/Extra/", "/Extras/",
             "/Jujutsu Kaisen 0/", "/NCOP & NCED/", "/Special/", "/Other/"
           ]

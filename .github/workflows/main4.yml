@@ -111,10 +111,10 @@ jobs:
           res = subprocess.run(['aria2c', '-S', torrent_file], capture_output=True, text=True)
           
           ignore_patterns = [
-            "NCOP", "NCED", "Teaser", "Special OP", "Special ED", "Creditless", "/NC/",
+            "NCOP", "NCED", "Teaser", "S00", "Special OP", "Special ED", "Creditless", "/NC/",
             "/Trailers/", "/New folder/", "/Specials/", "/Extra/", "/Extras/",
-            "/Jujutsu Kaisen 0/", "/NCOP & NCED/", "/Special/", "/Other/",
-            "/Tonikaku Kawaii [BD 1080p x265 OPUS][DUAL][Anipakku]/", "/Tonikaku Kawaii 2nd Season [BD 1080p x265 OPUS][DUAL][Anipakku]/"
+            "/Jujutsu Kaisen 0/", "/NCOP & NCED/", "/Special/", "/Other/", "OP -", "ED -", "_Daze_",
+            "/[Anime Time] Soul Eater/"
           ]
           
           indices = []
@@ -256,6 +256,9 @@ jobs:
           source = 'WEB-DL'
           if any(k in filename.lower() for k in['bd', 'blu-ray', 'bluray', 'bdrip', 'brrip']):
               source = 'Bluray'
+
+          # ---> NEW OVA DETECTION <---
+          is_ova = bool(re.search(r'\b(OVA|OAD)\b', clean_name, re.IGNORECASE))
               
           if media_type == 'movie':
               print(f"{folder_title}.{variation}|.|movie|{tmdb_id}|{source}|{quality}|{variation}")
@@ -271,7 +274,11 @@ jobs:
                               e_val = ep.get('episode_number')
                               break
 
-              print(f"{folder_title}|Season.{s_val:02d}/Episode.{e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
+              # ---> NEW ROUTING LOGIC <---
+              if is_ova:
+                  print(f"{folder_title}|OVA|series|{tmdb_id}|{source}|{quality}|{variation}")
+              else:
+                  print(f"{folder_title}|Season.{s_val:02d}/Episode.{e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
           EOF
           cat << 'EOF' > metadata_builder.py
           import os, json, requests, subprocess, sys, re, time, urllib.parse
@@ -318,12 +325,20 @@ jobs:
           is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
           size_str = f'{round(os.path.getsize(file_path)/(1024**3), 2)} GB'
           catalog_path = 'hls_output/session_catalog.json'
+          
           try:
               with open(catalog_path, 'r') as f: catalog = json.load(f)
           except: catalog =[]
-          sub_match = re.search(r'Season\.(\d+)/Episode\.(\d+)', sub_dir)
-          s_num = int(sub_match.group(1)) if sub_match else 1
-          e_num = int(sub_match.group(2)) if sub_match else 1
+          
+          # ---> NEW METADATA OVA HANDLING <---
+          if sub_dir.upper() == 'OVA':
+              s_num = 0
+              e_num = 1
+          else:
+              sub_match = re.search(r'Season\.(\d+)/Episode\.(\d+)', sub_dir)
+              s_num = int(sub_match.group(1)) if sub_match else 1
+              e_num = int(sub_match.group(2)) if sub_match else 1
+              
           if is_movie:
               show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'pgs_overlays': pgs_overlays_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
           else:
@@ -402,7 +417,10 @@ jobs:
               show_meta['_total_secs'] += dur_seconds; show_meta['_ep_count'] += 1;
               calc_dur_str = format_dur(show_meta['_total_secs'] / max(show_meta['_ep_count'], 1))
               show_meta['average_duration'] = calc_dur_str
-              ep_name = f'Episode {e_num}'
+              
+              # ---> NEW EPISODE NAMING <---
+              ep_name = 'OVA' if sub_dir.upper() == 'OVA' else f'Episode {e_num}'
+              
               if (tmdb_key or tmdb_key_2) and show_meta['id'] != 0:
                   ep_res = fetch_tmdb(f'/tv/{show_meta["id"]}/season/{s_num}/episode/{e_num}')
                   if ep_res and ep_res.get('name'):

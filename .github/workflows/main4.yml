@@ -954,10 +954,7 @@ jobs:
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) \
             ! -iname "*NCOP*" \
             ! -iname "*NCED*" \
-            ! -iname "*Trailer*" \
-            ! -iname "*Teaser*" \
-            ! -iname "*Credit*" \
-            ! -iname "*S00*" \
+            ! -iname "*Creditless*" \
             ! -iname "*Special OP*" \
             ! -iname "*Special ED*" \
             ! -ipath "*/Trailers/*" \
@@ -965,7 +962,6 @@ jobs:
             ! -ipath "*/Specials/*" \
             ! -ipath "*/Extra/*" \
             ! -ipath "*/Extras/*" \
-            ! -ipath "*/Jujutsu Kaisen 0/*" \
             ! -ipath "*/NCOP & NCED/*" \
             ! -ipath "*/Special/*" \
             ! -ipath "*/Other/*")

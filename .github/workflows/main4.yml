@@ -111,7 +111,7 @@ jobs:
           res = subprocess.run(['aria2c', '-S', torrent_file], capture_output=True, text=True)
           
           ignore_patterns = [
-            "NCOP", "NCED", "Teaser", "S00", "Special OP", "Special ED", "Creditless", "/NC/",
+            "NCOP", "NCED", "Teaser", "Special OP", "Special ED", "Creditless", "/NC/",
             "/Trailers/", "/New folder/", "/Specials/", "/Extra/", "/Extras/",
             "/Jujutsu Kaisen 0/", "/NCOP & NCED/", "/Special/", "/Other/", "OP -", "ED -", "_Daze_",
             "/[Anime Time] Soul Eater/"
@@ -146,7 +146,7 @@ jobs:
         if: env.found == 'true'
         run: |
           cat << 'EOF' > routing.py
-          import os, sys, re, requests, urllib.parse
+          import os, sys, re, requests, urllib.parse, json
           from guessit import guessit
           
           filepath = sys.argv[1]
@@ -258,7 +258,7 @@ jobs:
               source = 'Bluray'
 
           # ---> NEW OVA DETECTION <---
-          is_ova = bool(re.search(r'\b(OVA|OAD|S00)\b', clean_name, re.IGNORECASE))
+          is_ova = bool(re.search(r'\b(OVA|OAD|S00|PV)\b', clean_name, re.IGNORECASE))
               
           if media_type == 'movie':
               print(f"{folder_title}.{variation}|.|movie|{tmdb_id}|{source}|{quality}|{variation}")
@@ -274,9 +274,38 @@ jobs:
                               e_val = ep.get('episode_number')
                               break
 
-              # ---> NEW ROUTING LOGIC <---
+              # ---> NEW DYNAMIC OVA ROUTING LOGIC <---
               if is_ova:
-                  print(f"{folder_title}|OVA|series|{tmdb_id}|{source}|{quality}|{variation}")
+                  s_val = 0
+                  ova_e_val = 1
+                  hf_bucket = os.environ.get('HF_ANIME_BUCKET', '')
+                  
+                  def get_max_s0(meta_dict):
+                      max_ep = 0
+                      for ep in meta_dict.get('episodes', []):
+                          if ep.get('season_number') == 0 and ep.get('episode_number', 0) > max_ep:
+                              max_ep = ep.get('episode_number')
+                      return max_ep
+
+                  # 1. Check cloud state for previous runner batches
+                  if hf_bucket:
+                      cloud_url = f"https://huggingface.co/buckets/{hf_bucket}/resolve/{urllib.parse.quote(folder_title)}/metadata.json"
+                      try:
+                          r = requests.get(cloud_url, timeout=5)
+                          if r.status_code == 200:
+                              ova_e_val = max(ova_e_val, get_max_s0(r.json()) + 1)
+                      except: pass
+                  
+                  # 2. Check local state (in case processing multiple specials in THIS batch)
+                  local_meta_path = f"hls_output/{folder_title}/metadata.json"
+                  try:
+                      if os.path.exists(local_meta_path):
+                          with open(local_meta_path, 'r') as f:
+                              ova_e_val = max(ova_e_val, get_max_s0(json.load(f)) + 1)
+                  except: pass
+
+                  # Route to unique Season.00 folders to avoid file clobbering
+                  print(f"{folder_title}|Season.00/Episode.{ova_e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
               else:
                   print(f"{folder_title}|Season.{s_val:02d}/Episode.{e_val:02d}|series|{tmdb_id}|{source}|{quality}|{variation}")
           EOF
@@ -330,14 +359,10 @@ jobs:
               with open(catalog_path, 'r') as f: catalog = json.load(f)
           except: catalog =[]
           
-          # ---> NEW METADATA OVA HANDLING <---
-          if sub_dir.upper() == 'OVA':
-              s_num = 0
-              e_num = 1
-          else:
-              sub_match = re.search(r'Season\.(\d+)/Episode\.(\d+)', sub_dir)
-              s_num = int(sub_match.group(1)) if sub_match else 1
-              e_num = int(sub_match.group(2)) if sub_match else 1
+          # Regex now naturally catches Season.00/Episode.01 for specials
+          sub_match = re.search(r'Season\.(\d+)/Episode\.(\d+)', sub_dir)
+          s_num = int(sub_match.group(1)) if sub_match else 1
+          e_num = int(sub_match.group(2)) if sub_match else 1
               
           if is_movie:
               show_meta = {'id': tmdb_id, 'type': 'movie', 'title': '', 'movie_title': '', 'original_filename': filename, 'year': '', 'rating': 0.0, 'source': source_str, 'quality': resolution_str, 'duration': format_dur(dur_seconds), 'size': size_str, 'HDR': is_hdr, 'available_audio': available_audio, 'ass_subtitles': ass_subs_final, 'pgs_overlays': pgs_overlays_final, 'fonts': fonts_final, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': int(time.time()), 'hls_manifest_url': manifest_url}
@@ -418,13 +443,22 @@ jobs:
               calc_dur_str = format_dur(show_meta['_total_secs'] / max(show_meta['_ep_count'], 1))
               show_meta['average_duration'] = calc_dur_str
               
-              # ---> NEW EPISODE NAMING <---
-              ep_name = 'OVA' if sub_dir.upper() == 'OVA' else f'Episode {e_num}'
+              # ---> DYNAMIC SPECIAL NAMING <---
+              ep_name = f'Episode {e_num}'
+              if s_num == 0:
+                  if re.search(r'\b(PV|Trailer|Teaser)\b', filename, re.IGNORECASE):
+                      ep_name = f'PV {e_num}'
+                  elif re.search(r'\b(OVA|OAD)\b', filename, re.IGNORECASE):
+                      ep_name = f'OVA {e_num}'
+                  else:
+                      ep_name = f'Special {e_num}'
               
               if (tmdb_key or tmdb_key_2) and show_meta['id'] != 0:
+                  # TMDB officially classifies specials under Season 0. It will fetch the real name!
                   ep_res = fetch_tmdb(f'/tv/{show_meta["id"]}/season/{s_num}/episode/{e_num}')
                   if ep_res and ep_res.get('name'):
                       ep_name = ep_res['name']
+                      
               show_meta['episodes'] =[ep for ep in show_meta.get('episodes', []) if not (ep['season_number']==s_num and ep['episode_number']==e_num)]
               show_meta['episodes'].append({'season_number': s_num, 'episode_number': e_num, 'episode_name': ep_name, 'quality': resolution_str, 'date_added': int(time.time()), 'hls_manifest_url': manifest_url})
               show_meta['episodes'].sort(key=lambda x: (x['season_number'], x['episode_number']))

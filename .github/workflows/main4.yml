@@ -258,7 +258,7 @@ jobs:
               source = 'Bluray'
 
           # ---> NEW OVA DETECTION <---
-          is_ova = bool(re.search(r'\b(OVA|OAD)\b', clean_name, re.IGNORECASE))
+          is_ova = bool(re.search(r'\b(OVA|OAD|S00)\b', clean_name, re.IGNORECASE))
               
           if media_type == 'movie':
               print(f"{folder_title}.{variation}|.|movie|{tmdb_id}|{source}|{quality}|{variation}")

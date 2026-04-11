@@ -929,19 +929,31 @@ jobs:
           rm -f hls_output/*.torrent hls_output/*.zip hls_output/temp_* || true
           
           python3 -c "
-          import os
+          import os, time
           from huggingface_hub import login, sync_bucket
+          
           token = os.environ.get('HF_TOKEN')
           bucket = os.environ.get('HF_ANIME_BUCKET')
           
           print('🚀 Authenticating Hugging Face SDK...')
           login(token=token)
           
-          print('⚡ Initiating ultra-fast Storage Bucket sync via Xet Deduplication...')
-          sync_bucket('./hls_output', f'hf://buckets/{bucket}')
+          print('⚡ Initiating Storage Bucket sync...')
+          max_retries = 3
+          for attempt in range(max_retries):
+              try:
+                  sync_bucket('./hls_output', f'hf://buckets/{bucket}')
+                  print('✅ Anime Bucket Sync completed successfully.')
+                  break
+              except Exception as e:
+                  print(f'⚠️ Attempt {attempt + 1} failed: {e}')
+                  if attempt < max_retries - 1:
+                      print('⏳ Retrying in 15 seconds...')
+                      time.sleep(15)
+                  else:
+                      print('❌ All sync attempts failed.')
+                      raise
           "
-          
-          echo "✅ Anime Bucket Sync completed successfully."
 
       - name: Atomic Cloud Catalog Sync
         if: env.found == 'true' && success()

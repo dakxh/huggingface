@@ -113,8 +113,7 @@ jobs:
           ignore_patterns = [
             "NCOP", "NCED", "Teaser", "Special OP", "Special ED", "Creditless", "/NC/",
             "/Trailers/", "/New folder/", "/Specials/", "/Extra/", "/Extras/",
-            "/Jujutsu Kaisen 0/", "/NCOP & NCED/", "/Special/", "/Other/", "OP -", "ED -", "_Daze_",
-            "/[Anime Time] Soul Eater/"
+            "/NCOP & NCED/", "/Special/", "/Other/", "OP -", "ED -"
           ]
           
           indices = []

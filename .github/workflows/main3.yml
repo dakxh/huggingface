@@ -170,8 +170,13 @@ jobs:
           if year_matches:
               last_year_match = year_matches[-1]
               raw_prefix = filename[:last_year_match.start()]
+              
+              # ---> FIX: Sever TV Show tags (S01E01, S02, etc.) before treating the string as a title
+              raw_prefix = re.split(r'(?i)[ _.-]+(?:S\d{1,2}E\d{1,4}|S\d{1,2}|Season\s?\d{1,2}|E\d{1,4})\b', raw_prefix)[0]
+              
               regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
-              if len(regex_title) > len(title): title = regex_title
+              if len(regex_title) > len(title) and regex_title.lower() != 'unknown': 
+                  title = regex_title
               year = last_year_match.group(1)
           else: year = str(g.get('year', ''))
                   
@@ -248,8 +253,13 @@ jobs:
           if year_matches:
               last_year_match = year_matches[-1]
               raw_prefix = filename[:last_year_match.start()]
+              
+              # ---> FIX: Sever TV Show tags (S01E01, S02, etc.) before treating the string as a title
+              raw_prefix = re.split(r'(?i)[ _.-]+(?:S\d{1,2}E\d{1,4}|S\d{1,2}|Season\s?\d{1,2}|E\d{1,4})\b', raw_prefix)[0]
+              
               regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
-              if len(regex_title) > len(title): title = regex_title
+              if len(regex_title) > len(title) and regex_title.lower() != 'unknown': 
+                  title = regex_title
               year = last_year_match.group(1)
           else: year = str(g.get('year', ''))
           if not title: title = 'Unknown Title'

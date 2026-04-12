@@ -196,7 +196,6 @@ jobs:
               if folder_season:
                   s_guess = folder_season
 
-          if not e_guess: e_guess = 1
           has_movie_keywords = any(k in filename.lower() for k in['movie', 'gekijouban', 'film', 'kanketsu', 'the final'])
           if (g.get('type') == 'movie' and not anime_match) or has_movie_keywords:
               media_type = 'movie'
@@ -256,15 +255,16 @@ jobs:
           if any(k in filename.lower() for k in['bd', 'blu-ray', 'bluray', 'bdrip', 'brrip']):
               source = 'Bluray'
 
-          # ---> NEW OVA DETECTION <---
-          is_ova = bool(re.search(r'\b(OVA|OAD|S00|PV)\b', clean_name, re.IGNORECASE))
+          # ---> FIX 1: THE STRICT NULL CHECK (Rescues Falsy Zeros) <---
+          s_val = int(s_guess[0] if isinstance(s_guess, list) else s_guess) if s_guess is not None and str(s_guess).strip() != "" else 1
+          e_val = int(e_guess[0] if isinstance(e_guess, list) else e_guess) if e_guess is not None and str(e_guess).strip() != "" else 1
+
+          # ---> FIX 2: BULLETPROOF OVA DETECTION <---
+          is_ova = bool(re.search(r'\b(OVA|OAD|PV)\b|S00', clean_name, re.IGNORECASE)) or (s_val == 0)
               
           if media_type == 'movie':
               print(f"{folder_title}.{variation}|.|movie|{tmdb_id}|{source}|{quality}|{variation}")
           else:
-              s_val = int(s_guess[0] if isinstance(s_guess, list) else s_guess) if s_guess else 1
-              e_val = int(e_guess[0] if isinstance(e_guess, list) else e_guess) if e_guess else 1
-              
               if tmdb_id != 0:
                   season_data = fetch_tmdb(f'/tv/{tmdb_id}/season/{s_val}', '')
                   if season_data and season_data.get('episodes'):
@@ -650,7 +650,8 @@ jobs:
             VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | tr -d '[:space:]' || true)
             [[ "$VIDEO_CODEC" == "hevc" ]] && V_TAG="-tag:v hvc1" || V_TAG="-tag:v avc1"
             
-            ffmpeg -nostdin -fflags +genpts -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
+            # ---> FIX 3: LOG SILENCING <---
+            ffmpeg -nostdin -v error -stats -fflags +genpts -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 -max_muxing_queue_size 9999 \
               -f hls -hls_segment_type mpegts -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
               -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \

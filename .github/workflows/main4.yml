@@ -1014,6 +1014,10 @@ jobs:
                   final_meta = new_meta
                   final_meta['average_duration'] = format_dur(final_meta.get('_total_secs', 0.0) / max(final_meta.get('_ep_count', 1), 1))
                   
+              # Add these two lines right here to guarantee sorting regardless of path
+              if 'episodes' in final_meta:
+                  final_meta['episodes'].sort(key=lambda x: (x.get('season_number', 0), x.get('episode_number', 0)))
+                  
               with open(f'hls_output/{base_dir}/metadata.json', 'w') as f:
                   json.dump(final_meta, f, indent=4)
                   

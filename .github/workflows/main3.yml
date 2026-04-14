@@ -2,6 +2,11 @@ name: Discord Torrent to HLS Pipeline (bucket edition)
 
 on:
   workflow_dispatch:
+    inputs:
+      target_link:
+        description: 'Direct link to payload (Drive, Torrent, Magnet)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -19,31 +24,15 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
-          
-          # Added PEP 668 breakout to ensure OS pipelines do not break on huggingface pip installs
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
-      - name: Compile and Fetch from Discord
-        id: discord_fetch
-        env:
-          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+      - name: Acknowledge Payload
+        id: payload_ack
         run: |
-          g++ discord_manager.cpp -o discord_manager -lcurl
+          # 🧠 Checkpoint 1: The Worker will look for this exact string
+          echo "Target acquired: ${{ inputs.target_link }}"
           
-          OUTPUT=$(./discord_manager "$DISCORD_TOKEN" "$CHANNEL_ID" fetch)
-          MSG_ID=$(echo "$OUTPUT" | cut -d'|' -f1)
-          TARGET_LINK=$(echo "$OUTPUT" | cut -d'|' -f2-)
-          
-          if [ -z "$TARGET_LINK" ] || [ "$MSG_ID" == "empty" ] || [ "$MSG_ID" == "error" ]; then
-            echo "❌ API Error or No valid link found."
-            echo "found=false" >> $GITHUB_ENV
-            exit 0
-          fi
-          
-          echo "Target acquired: $TARGET_LINK"
-          echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
-          echo "TARGET_LINK=$TARGET_LINK" >> $GITHUB_ENV
+          echo "TARGET_LINK=${{ inputs.target_link }}" >> $GITHUB_ENV
           echo "found=true" >> $GITHUB_ENV
 
       - name: Download and Extract Payload
@@ -55,15 +44,12 @@ jobs:
           echo "Evaluating Payload Type..."
           
           if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
-            
-            # --- THE IDM WORKAROUND: Pre-Authenticated Direct Links ---
             if [[ "$TARGET_LINK" == *\&at=* ]] || [[ "$TARGET_LINK" == *confirm=t* ]]; then
               echo "🚀 Detected Pre-Authenticated Direct Drive Link. Bypassing APIs and fetching natively..."
               cd workspace
               curl -# -L -OJ "$TARGET_LINK"
               cd ..
             else
-            # --- ENTERPRISE SA DOWNLOADER ---
               echo "🌐 Detected Standard Google Drive Link. Initializing Lightning SA Downloader..."
               
               cat << 'EOF' > gdrive_sa_dl.py
@@ -103,19 +89,18 @@ jobs:
                       with open(os.path.join("workspace", fname), 'wb') as f:
                           for chunk in r.iter_content(chunk_size=1024*1024*10):
                               if chunk: f.write(chunk)
+                  # 🧠 Checkpoint 2: The Worker will look for this exact string
                   print(f"✅ Download complete: {fname}")
               except Exception as e:
                   print(f"\n❌ Download Failed: {e}")
                   sys.exit(1)
 
           def process_node(fid):
-              print(f"🔍 Inspecting Drive ID: {fid}")
               try:
                   url = f"https://www.googleapis.com/drive/v3/files/{fid}?fields=name,mimeType"
                   res = requests.get(url, headers=headers).json()
-                  if 'error' in res: raise Exception(res['error']['message'])
               except Exception as e:
-                  print(f"❌ API Error: {e}"); sys.exit(1)
+                  sys.exit(1)
 
               if res.get('mimeType') == 'application/vnd.google-apps.folder':
                   q_url = f"https://www.googleapis.com/drive/v3/files?q='{fid}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)"
@@ -127,7 +112,6 @@ jobs:
 
           process_node(file_id)
           EOF
-              
               python gdrive_sa_dl.py "$TARGET_LINK"
             fi
             
@@ -135,12 +119,13 @@ jobs:
             echo "📎 Detected HTTP Link. Fetching torrent file explicitly..."
             curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
             aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
+            echo "✅ Download complete: Torrent Payload"
           else
             echo "🧲 Detected Magnet Link. Fetching metadata natively..."
             aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
+            echo "✅ Download complete: Magnet Payload"
           fi
           
-          echo "📦 Scanning for ZIP archives..."
           while read -u 9 ZIP_FILE; do
             unzip -q -o "$ZIP_FILE" -d workspace/
             rm "$ZIP_FILE"
@@ -148,7 +133,6 @@ jobs:
           
           VIDEO_COUNT=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l)
           if [ "$VIDEO_COUNT" -eq 0 ]; then
-             echo "❌ CRITICAL ERROR: Failed to locate any video files. Exiting."
              exit 1
           fi
 
@@ -861,15 +845,14 @@ jobs:
         if: env.found == 'true' && success()
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          QUEUE_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
           TOTAL_FILES=$(find hls_output -type f | wc -l)
           TOTAL_SIZE=$(du -sh hls_output | cut -f1)
           STATUS_MSG="✅ **Bucket Sync Complete!** \n🎬 Generated: \`${TOTAL_FILES} chunks/files\`\n📦 Total Size: \`${TOTAL_SIZE}\`\n🌐 Synced instantly via Storage Buckets CDN."
           
-          ./discord_manager "$DISCORD_TOKEN" "$QUEUE_CHANNEL_ID" delete "$MSG_ID"
-          ./discord_manager "$DISCORD_TOKEN" "$PING_CHANNEL_ID" send "$STATUS_MSG"
+          PAYLOAD=$(jq -n --arg content "$STATUS_MSG" '{content: $content}')
+          curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"
 
       - name: Report Failure to Discord
         if: env.found == 'true' && failure()
@@ -879,10 +862,4 @@ jobs:
         run: |
           FAIL_MSG="❌ **Pipeline Failed!** \n🚨 The Torrent/Drive-to-HLS job crashed during execution.\n🔗 [View Action Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
           PAYLOAD=$(jq -n --arg content "$FAIL_MSG" '{content: $content}')
-          
-          curl -s -H "Authorization: Bot $DISCORD_TOKEN" \
-               -H "Content-Type: application/json" \
-               -H "User-Agent: DiscordBot (https://github.com, 1.0)" \
-               -X POST \
-               -d "$PAYLOAD" \
-               "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"
+          curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"

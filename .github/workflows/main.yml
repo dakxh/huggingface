@@ -1,4 +1,4 @@
-name: Movie - cleanup
+name: Movie- cleanup
 
 on:
   workflow_dispatch:
@@ -181,8 +181,13 @@ jobs:
           if year_matches:
               last_year_match = year_matches[-1]
               raw_prefix = filename[:last_year_match.start()]
+              
+              # ---> FIX: Sever TV Show tags (S01E01, S02, etc.) before treating the string as a title
+              raw_prefix = re.split(r'(?i)[ _.-]+(?:S\d{1,2}E\d{1,4}|S\d{1,2}|Season\s?\d{1,2}|E\d{1,4})\b', raw_prefix)[0]
+              
               regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
-              if len(regex_title) > len(title): title = regex_title
+              if len(regex_title) > len(title) and regex_title.lower() != 'unknown': 
+                  title = regex_title
               year = last_year_match.group(1)
           else: year = str(g.get('year', ''))
                   
@@ -195,7 +200,6 @@ jobs:
           elif '720' in quality_raw or '1280' in quality_raw:
               resolution = '720p'
           else:
-              # Defaults 1920x1080, 1920x800, 1920x960, and anything unknown to 1080p
               resolution = '1080p'
 
           is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
@@ -231,8 +235,9 @@ jobs:
           title = re.sub(r'[^a-zA-Z0-9.\-]', '', title)
                   
           if vid_type == 'episode' or e:
-              s_val = int(s[0] if isinstance(s, list) else s) if s else 1
-              e_val = int(e[0] if isinstance(e, list) else e) if e else 1
+              # ---> FIX 1: THE STRICT NULL CHECK (Rescues Falsy Zeros for S00 Specials) <---
+              s_val = int(s[0] if isinstance(s, list) else s) if s is not None and str(s).strip() != "" else 1
+              e_val = int(e[0] if isinstance(e, list) else e) if e is not None and str(e).strip() != "" else 1
               base_dir = f"{title}.{year}" if year else title
               print(f'{base_dir}|Season.{s_val:02d}/Episode.{e_val:02d}|{is_imax}|{is_hdr}|{variation_str}|{resolution}')
           else:
@@ -259,8 +264,13 @@ jobs:
           if year_matches:
               last_year_match = year_matches[-1]
               raw_prefix = filename[:last_year_match.start()]
+              
+              # ---> FIX: Sever TV Show tags (S01E01, S02, etc.) before treating the string as a title
+              raw_prefix = re.split(r'(?i)[ _.-]+(?:S\d{1,2}E\d{1,4}|S\d{1,2}|Season\s?\d{1,2}|E\d{1,4})\b', raw_prefix)[0]
+              
               regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
-              if len(regex_title) > len(title): title = regex_title
+              if len(regex_title) > len(title) and regex_title.lower() != 'unknown': 
+                  title = regex_title
               year = last_year_match.group(1)
           else: year = str(g.get('year', ''))
           if not title: title = 'Unknown Title'
@@ -292,7 +302,7 @@ jobs:
           except: catalog =[]
               
           if sub_dir:
-              # ====== TV SHOW ======
+              # ====== TV SHOW (LOCAL LOGGER MODE) ======
               s_val, e_val = g.get('season'), g.get('episode')
               if not s_val:
                   s_match = re.search(r'[Ss](\d{1,2})[Ee]\d', filename)
@@ -301,59 +311,61 @@ jobs:
                   anime_match = re.search(r'(?:\s-\s|[Ee][Pp]?\s?|v)(\d{1,4})(?:v\d)?(?:\s|\[|\.|\()', filename)
                   if anime_match: e_val = int(anime_match.group(1))
               
-              season_num = int(s_val[0] if isinstance(s_val, list) else s_val) if s_val else 1
-              episode_num = int(e_val[0] if isinstance(e_val, list) else e_val) if e_val else 1
+              season_num = int(s_val[0] if isinstance(s_val, list) else s_val) if s_val is not None and str(s_val).strip() != "" else 1
+              episode_num = int(e_val[0] if isinstance(e_val, list) else e_val) if e_val is not None and str(e_val).strip() != "" else 1
               
-              show_meta_path = f'hls_output/{base_dir}/metadata.json'
-              show_meta = {'id': 0, 'type': 'series', 'title': title, 'year': year, 'rating': 0.0, 'quality': resolution_str, 'duration': '0m', 'IMAX': is_imax, 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': date_added, '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
+              # Append to Local Batch Log for JIT Merger
+              batch_log_path = 'hls_output/local_batch_log.json'
+              try:
+                  with open(batch_log_path, 'r') as f: batch_log = json.load(f)
+              except: batch_log = {}
               
-              if os.path.exists(show_meta_path):
-                  try:
-                      with open(show_meta_path, 'r') as f: show_meta.update(json.load(f)); show_meta['date_added'] = date_added
-                  except: pass
+              if base_dir not in batch_log:
+                  batch_log[base_dir] = {'id': 0, 'type': 'series', 'title': title, 'year': year, 'rating': 0.0, 'quality': resolution_str, 'duration': '0m', 'IMAX': is_imax, 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': date_added, '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
                   
-              show_meta['_total_secs'] += dur_seconds
-              show_meta['_ep_count'] += 1
-              show_meta['duration'] = format_dur(show_meta['_total_secs'] / show_meta['_ep_count'])
-              show_meta['quality'] = resolution_str
-              if is_imax: show_meta['IMAX'] = True
-              if is_hdr: show_meta['HDR'] = True
-                  
-              if tmdb_key and title != 'Unknown Title' and show_meta['id'] == 0:
-                  try:
-                      res = requests.get(f'https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={title}').json()
-                      if res.get('results'):
-                          match = res['results'][0]
-                          show_meta['id'] = match.get('id', 0)
-                          show_meta['title'] = match.get('name', title)
-                          if not show_meta['year']: show_meta['year'] = match.get('first_air_date', '')[:4]
-                          show_meta['overview'] = match.get('overview', '')
-                          show_meta['rating'] = round(match.get('vote_average', 0.0), 1)
-                          if match.get('poster_path'): show_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get('poster_path')}"
-                  except: pass
-                  
+                  if tmdb_key and title != 'Unknown Title':
+                      try:
+                          res = requests.get(f'https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={title}').json()
+                          if res.get('results'):
+                              match = res['results'][0]
+                              batch_log[base_dir]['id'] = match.get('id', 0)
+                              batch_log[base_dir]['title'] = match.get('name', title)
+                              if not batch_log[base_dir]['year']: batch_log[base_dir]['year'] = match.get('first_air_date', '')[:4]
+                              batch_log[base_dir]['overview'] = match.get('overview', '')
+                              batch_log[base_dir]['rating'] = round(match.get('vote_average', 0.0), 1)
+                              if match.get('poster_path'): batch_log[base_dir]['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get('poster_path')}"
+                      except: pass
+              
+              batch_log[base_dir]['_total_secs'] += dur_seconds
+              batch_log[base_dir]['_ep_count'] += 1
+              batch_log[base_dir]['duration'] = format_dur(batch_log[base_dir]['_total_secs'] / batch_log[base_dir]['_ep_count'])
+              batch_log[base_dir]['quality'] = resolution_str
+              if is_imax: batch_log[base_dir]['IMAX'] = True
+              if is_hdr: batch_log[base_dir]['HDR'] = True
+              
               episode_name = f'Episode {episode_num}'
-              if tmdb_key and show_meta['id'] != 0:
+              if tmdb_key and batch_log[base_dir]['id'] != 0:
                   try:
-                      ep_res = requests.get(f'https://api.themoviedb.org/3/tv/{show_meta["id"]}/season/{season_num}/episode/{episode_num}?api_key={tmdb_key}').json()
+                      ep_res = requests.get(f'https://api.themoviedb.org/3/tv/{batch_log[base_dir]["id"]}/season/{season_num}/episode/{episode_num}?api_key={tmdb_key}').json()
                       if ep_res.get('name'): episode_name = ep_res['name']
                   except: pass
               
-              show_meta['episodes'] =[ep for ep in show_meta['episodes'] if not (ep['season_number'] == season_num and ep['episode_number'] == episode_num)]
-              show_meta['episodes'].append({'season_number': season_num, 'episode_number': episode_num, 'episode_name': episode_name, 'quality': resolution_str, 'date_added': date_added, 'hls_manifest_url': manifest_url})
-              show_meta['episodes'] = sorted(show_meta['episodes'], key=lambda x: (x['season_number'], x['episode_number']))
+              ep_entry = {'season_number': season_num, 'episode_number': episode_num, 'episode_name': episode_name, 'quality': resolution_str, 'date_added': date_added, 'hls_manifest_url': manifest_url}
               
-              with open(show_meta_path, 'w') as f: json.dump(show_meta, f, indent=4)
+              batch_log[base_dir]['episodes'] = [ep for ep in batch_log[base_dir].get('episodes', []) if not (ep['season_number']==season_num and ep['episode_number']==episode_num)]
+              batch_log[base_dir]['episodes'].append(ep_entry)
+              batch_log[base_dir]['episodes'] = sorted(batch_log[base_dir]['episodes'], key=lambda x: (x['season_number'], x['episode_number']))
+              
+              with open(batch_log_path, 'w') as f: json.dump(batch_log, f, indent=4)
                   
-              ep_meta = {'id': show_meta['id'], 'series_title': title, 'season_number': season_num, 'episode_number': episode_num, 'episode_name': episode_name, 'original_filename': filename, 'quality': resolution_str, 'duration': duration_formatted, 'size': size_str, 'available_audio': available_audio, 'available_subs': available_subs, 'date_added': date_added, 'hls_manifest_url': manifest_url}
+              ep_meta = {'id': batch_log[base_dir]['id'], 'series_title': batch_log[base_dir]['title'], 'season_number': season_num, 'episode_number': episode_num, 'episode_name': episode_name, 'original_filename': filename, 'quality': resolution_str, 'duration': duration_formatted, 'size': size_str, 'available_audio': available_audio, 'available_subs': available_subs, 'date_added': date_added, 'hls_manifest_url': manifest_url}
               with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
                   
               series_metadata_url = f"https://huggingface.co/buckets/{hf_bucket}/{urllib.parse.quote(base_dir)}/metadata.json"
               catalog =[item for item in catalog if item.get('type') != 'episode']
-              catalog =[item for item in catalog if not (item.get('type') == 'series' and item.get('title') == show_meta['title'])]
+              catalog =[item for item in catalog if not (item.get('type') == 'series' and item.get('title') == batch_log[base_dir]['title'])]
               
-              catalog.append({'id': show_meta['id'], 'type': 'series', 'title': show_meta['title'], 'year': show_meta['year'], 'quality': resolution_str, 'date_added': date_added, 'series_metadata_url': series_metadata_url, 'poster_url': show_meta.get('poster_url', '')})
-                      
+              catalog.append({'id': batch_log[base_dir]['id'], 'type': 'series', 'title': batch_log[base_dir]['title'], 'year': batch_log[base_dir]['year'], 'quality': resolution_str, 'date_added': date_added, 'series_metadata_url': series_metadata_url, 'poster_url': batch_log[base_dir].get('poster_url', '')})
           else:
               # ====== MOVIE ======
               movie_meta = {'id': 0, 'type': 'movie', 'original_filename': filename, 'title': title, 'year': year, 'rating': 0.0, 'quality': resolution_str, 'duration': duration_formatted, 'IMAX': is_imax, 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'hls_manifest_url': manifest_url, 'overview': '', 'available_audio': available_audio, 'available_subs': available_subs, 'date_added': date_added}
@@ -539,8 +551,8 @@ jobs:
               V_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
             fi
             
-            # REMOVED -shortest FLAG AND REPLACED WITH HARD DURATION CUTOFF -t "$V_DUR"
-            if ! ffmpeg -nostdin -fflags +genpts -i "$VIDEO_FILE" \
+            # ---> FIX 2: LOG SILENCING (Prevents massive logs on embedded fonts/attachments) <---
+            if ! ffmpeg -nostdin -v error -stats -fflags +genpts -i "$VIDEO_FILE" \
               $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
               -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 \
               -max_muxing_queue_size 9999 -f hls -hls_segment_type mpegts \
@@ -680,6 +692,69 @@ jobs:
             echo "❌ CRITICAL ERROR: hls_output is empty. Processing failed."
             exit 1
           fi
+
+      - name: Just-In-Time (JIT) Metadata Merger
+        if: env.found == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_BUCKET: ${{ secrets.HF_BUCKET }}
+        run: |
+          python3 -c "
+          import os, json, requests, urllib.parse
+          
+          hf_token = os.environ.get('HF_TOKEN', '')
+          hf_bucket = os.environ.get('HF_BUCKET', '')
+          headers = {'Authorization': f'Bearer {hf_token}'} if hf_token else {}
+          
+          batch_log_path = 'hls_output/local_batch_log.json'
+          if not os.path.exists(batch_log_path):
+              print('No local batch log found. Skipping JIT merge.')
+              exit(0)
+              
+          with open(batch_log_path, 'r') as f:
+              batch_log = json.load(f)
+              
+          def format_dur(secs): 
+              h, m = int(secs//3600), int((secs%3600)//60)
+              return f'{h}h{m}m' if h>0 else f'{m}m'
+              
+          for base_dir, new_meta in batch_log.items():
+              cloud_url = f'https://huggingface.co/buckets/{hf_bucket}/resolve/{urllib.parse.quote(base_dir)}/metadata.json'
+              
+              try:
+                  r = requests.get(cloud_url, headers=headers, timeout=10)
+                  if r.status_code == 200:
+                      cloud_meta = r.json()
+                      for key in ['title', 'overview', 'rating', 'year', 'poster_url', 'backdrop_url', 'id', 'quality', 'IMAX', 'HDR']:
+                          if new_meta.get(key): cloud_meta[key] = new_meta[key]
+                      
+                      cloud_meta['_total_secs'] = cloud_meta.get('_total_secs', 0.0) + new_meta.get('_total_secs', 0.0)
+                      cloud_meta['_ep_count'] = cloud_meta.get('_ep_count', 0) + new_meta.get('_ep_count', 0)
+                      cloud_meta['duration'] = format_dur(cloud_meta['_total_secs'] / max(cloud_meta['_ep_count'], 1))
+                      
+                      cloud_episodes = cloud_meta.get('episodes', [])
+                      for new_ep in new_meta.get('episodes', []):
+                          cloud_episodes = [ep for ep in cloud_episodes if not (ep.get('season_number') == new_ep['season_number'] and ep.get('episode_number') == new_ep['episode_number'])]
+                          cloud_episodes.append(new_ep)
+                          
+                      cloud_episodes.sort(key=lambda x: (x.get('season_number', 0), x.get('episode_number', 0)))
+                      cloud_meta['episodes'] = cloud_episodes
+                      cloud_meta['date_added'] = new_meta.get('date_added', 0)
+                      
+                      final_meta = cloud_meta
+                  else:
+                      final_meta = new_meta
+                      final_meta['duration'] = format_dur(final_meta.get('_total_secs', 0.0) / max(final_meta.get('_ep_count', 1), 1))
+              except Exception as e:
+                  print(f'Error fetching {cloud_url}: {e}. Using local data.')
+                  final_meta = new_meta
+                  final_meta['duration'] = format_dur(final_meta.get('_total_secs', 0.0) / max(final_meta.get('_ep_count', 1), 1))
+                  
+              with open(f'hls_output/{base_dir}/metadata.json', 'w') as f:
+                  json.dump(final_meta, f, indent=4)
+                  
+          print('✅ JIT Metadata Merge completed.')
+          "
           
       - name: Sync Output to Storage Bucket
         if: env.found == 'true'
@@ -689,6 +764,7 @@ jobs:
         run: |
           mv hls_output/session_catalog.json ./session_catalog.json || true
           rm -f hls_output/*.torrent hls_output/*.zip hls_output/temp_* || true
+          rm -f hls_output/local_batch_log.json || true
           
           python3 -c "
           import os

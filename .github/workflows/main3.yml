@@ -455,271 +455,279 @@ jobs:
           os.remove(log_path)
           EOF
 
-      - name: Process Master Loop (Batch Parsing, FFmpeg, Metadata)
+      - name: Compile Pipeline Worker (Phase 1 - Audio & Routing)
+        if: env.found == 'true'
+        run: |
+          cat << 'EOF' > worker.sh
+          #!/bin/bash
+          VIDEO_FILE="$1"
+          echo "================================================================"
+          echo "🎬 PROCESSING FILE: $VIDEO_FILE"
+          
+          ROUTING=$(python routing.py "$VIDEO_FILE")
+          BASE_DIR=$(echo "$ROUTING" | awk -F'|' '{print $1}')
+          SUB_DIR=$(echo "$ROUTING" | awk -F'|' '{print $2}')
+          IS_IMAX=$(echo "$ROUTING" | awk -F'|' '{print $3}')
+          IS_HDR=$(echo "$ROUTING" | awk -F'|' '{print $4}')
+          VARIATION=$(echo "$ROUTING" | awk -F'|' '{print $5}')
+          RESOLUTION=$(echo "$ROUTING" | awk -F'|' '{print $6}')
+          
+          if [ -n "$SUB_DIR" ]; then TARGET_DIR="$BASE_DIR/$SUB_DIR"; else TARGET_DIR="$BASE_DIR"; fi
+          
+          ORIG_TARGET_DIR="$TARGET_DIR"; COUNTER=2
+          while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
+            echo "⚠️ Collision detected! $TARGET_DIR already exists."
+            TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
+            COUNTER=$((COUNTER+1))
+          done
+          
+          echo "📁 Final Safe HF Directory: $TARGET_DIR"
+          mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
+          
+          VID_RES=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null | head -n 1)
+          VID_W=$(echo "$VID_RES" | cut -d'x' -f1)
+          VID_H=$(echo "$VID_RES" | cut -d'x' -f2)
+          [ -z "$VID_W" ] && VID_W="1920"
+          [ -z "$VID_H" ] && VID_H="1080"
+          
+          VID_FPS_RAW=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | head -n 1)
+          [ -z "$VID_FPS_RAW" ] && VID_FPS_RAW="24000/1001"
+          
+          VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          if [[ "$VIDEO_CODEC" == "hevc" ]]; then V_TAG="-tag:v hvc1"; else V_TAG="-tag:v avc1"; fi
+
+          STREAMS=$(ffprobe -v error -show_streams -of json "$VIDEO_FILE" | jq -r '.streams[] | [.index, .codec_type, (.tags.language // "und"), (.tags.title // "")] | @csv' | tr '[:upper:]' '[:lower:]' | tr -d '"')
+          AUDIO_MAPS="-map 0:V:0"
+          VAR_STREAM_MAP="v:0,agroup:audio "
+          AUDIO_ENCODING=""
+          A_IDX=0; AUDIO_SED_CMDS=""
+          
+          LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ko|kor|korean)([^a-z]|$)"
+          AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean)([^a-z]|$)"
+          DETECTED_AUDIO=""; DETECTED_SUBS=""; DETECTED_PGS=""
+          
+          while IFS=',' read -r index ctype lang title; do
+            if [[ "$ctype" == "audio" ]]; then
+              if [[ "$lang $title" =~ $AUDIO_LANG_REGEX ]]; then
+                CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                CHANNELS=$(ffprobe -v error -select_streams $index -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
+                ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
+                
+                case "${lang,,}" in
+                  en|eng|english) DISPLAY_LANG="English" ;;
+                  hi|hin|hindi) DISPLAY_LANG="Hindi" ;;
+                  te|tel|telugu) DISPLAY_LANG="Telugu" ;;
+                  ja|jap|jpn|japan|japanese) DISPLAY_LANG="Japanese" ;;
+                  ko|kor|korean) DISPLAY_LANG="Korean" ;;
+                  *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
+                esac
+
+                if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                  ORIG_BITRATE_K="$((ORIG_BITRATE / 1000))k"; DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
+                else ORIG_BITRATE_K="256k"; DISPLAY_BITRATE="Original"; fi
+                
+                IS_COMPATIBLE=0
+                if [[ ! "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then IS_COMPATIBLE=1; fi
+                IS_STEREO=0
+                if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -le 2 ]]; then IS_STEREO=1; fi
+
+                if [[ "$IS_COMPATIBLE" -eq 1 && "$IS_STEREO" -eq 1 ]]; then
+                  AUDIO_MAPS+=" -map 0:$index"
+                  VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
+                  AUDIO_ENCODING+=" -c:a:$A_IDX copy "
+                  AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"U_${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
+                  DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"; A_IDX=$((A_IDX + 1))
+                else
+                  if [[ "$IS_STEREO" -eq 0 ]]; then TARGET_BITRATE_DISP="512kbps"; else TARGET_BITRATE_DISP="${DISPLAY_BITRATE}"; [[ "$TARGET_BITRATE_DISP" == "Original" ]] && TARGET_BITRATE_DISP="256kbps"; fi
+                  
+                  AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
+                  # FRONT-LOADED APAD FOR EOF HANGS
+                  if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
+                  else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "; fi
+                  AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
+                  
+                  AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
+                  # FRONT-LOADED APAD FOR EOF HANGS
+                  if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
+                  else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr "; fi
+                  AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"M_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
+                  DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
+                fi
+              fi
+            fi
+          done <<< "$STREAMS"
+          
+          if [[ "$A_IDX" -eq 0 ]]; then
+            DETECTED_AUDIO="und"
+            DISPLAY_LANG="Unknown"
+            CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+            CHANNELS=$(ffprobe -v error -select_streams a:0 -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
+            ORIG_BITRATE=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
+            
+            if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+              ORIG_BITRATE_K="$((ORIG_BITRATE / 1000))k"; DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
+            else ORIG_BITRATE_K="256k"; DISPLAY_BITRATE="Original"; fi
+            
+            IS_COMPATIBLE=0
+            if [[ ! "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then IS_COMPATIBLE=1; fi
+            IS_STEREO=0
+            if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -le 2 ]]; then IS_STEREO=1; fi
+
+            if [[ "$IS_COMPATIBLE" -eq 1 && "$IS_STEREO" -eq 1 ]]; then
+              AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
+              AUDIO_ENCODING+=" -c:a:$A_IDX copy "; AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"U_${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
+              A_IDX=$((A_IDX + 1))
+            else
+              if [[ "$IS_STEREO" -eq 0 ]]; then TARGET_BITRATE_DISP="512kbps"; else TARGET_BITRATE_DISP="${DISPLAY_BITRATE}"; [[ "$TARGET_BITRATE_DISP" == "Original" ]] && TARGET_BITRATE_DISP="256kbps"; fi
+              
+              AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
+              # FRONT-LOADED APAD FOR EOF HANGS
+              if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
+              else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "; fi
+              AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
+              
+              AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
+              # FRONT-LOADED APAD FOR EOF HANGS
+              if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
+              else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr "; fi
+              AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"M_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
+            fi
+          fi
+          VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
+          EOF
+
+      - name: Compile Pipeline Worker (Phase 2 - Muxing & Execution)
         if: env.found == 'true'
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           HF_BUCKET: ${{ secrets.HF_BUCKET }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          mkdir -p hls_output
+          cat << 'EOF' >> worker.sh
           
-          while read -u 9 VIDEO_FILE; do
-            echo "================================================================"
-            echo "🎬 PROCESSING FILE: $VIDEO_FILE"
-            
-            ROUTING=$(python routing.py "$VIDEO_FILE")
-            BASE_DIR=$(echo "$ROUTING" | awk -F'|' '{print $1}')
-            SUB_DIR=$(echo "$ROUTING" | awk -F'|' '{print $2}')
-            IS_IMAX=$(echo "$ROUTING" | awk -F'|' '{print $3}')
-            IS_HDR=$(echo "$ROUTING" | awk -F'|' '{print $4}')
-            VARIATION=$(echo "$ROUTING" | awk -F'|' '{print $5}')
-            RESOLUTION=$(echo "$ROUTING" | awk -F'|' '{print $6}')
-            
-            if [ -n "$SUB_DIR" ]; then TARGET_DIR="$BASE_DIR/$SUB_DIR"; else TARGET_DIR="$BASE_DIR"; fi
-            
-            ORIG_TARGET_DIR="$TARGET_DIR"; COUNTER=2
-            while [ -d "hls_output/$TARGET_DIR" ] && [ "$(ls -A "hls_output/$TARGET_DIR" 2>/dev/null)" ]; do
-              echo "⚠️ Collision detected! $TARGET_DIR already exists."
-              TARGET_DIR="${ORIG_TARGET_DIR}_Part${COUNTER}"
-              COUNTER=$((COUNTER+1))
-            done
-            
-            echo "📁 Final Safe HF Directory: $TARGET_DIR"
-            mkdir -p "hls_output/$TARGET_DIR" "hls_output/$BASE_DIR"
-            
-            VID_RES=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null | head -n 1)
-            VID_W=$(echo "$VID_RES" | cut -d'x' -f1)
-            VID_H=$(echo "$VID_RES" | cut -d'x' -f2)
-            [ -z "$VID_W" ] && VID_W="1920"
-            [ -z "$VID_H" ] && VID_H="1080"
-            
-            VID_FPS_RAW=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | head -n 1)
-            [ -z "$VID_FPS_RAW" ] && VID_FPS_RAW="24000/1001"
-            
-            VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-            if [[ "$VIDEO_CODEC" == "hevc" ]]; then V_TAG="-tag:v hvc1"; else V_TAG="-tag:v avc1"; fi
+          # ⏱️ FIX: PRE-CALCULATE EXACT VIDEO DURATION TO PREVENT HANGING AT EOF
+          V_DUR=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | head -n 1)
+          
+          if [[ -z "$V_DUR" || "$V_DUR" == "N/A" ]]; then
+            V_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+          fi
+          
+          # ---> FIX 2: LOG SILENCING <---
+          if ! ffmpeg -nostdin -v error -stats -fflags +genpts -i "$VIDEO_FILE" \
+            $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
+            -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 \
+            -max_muxing_queue_size 9999 -f hls -hls_segment_type mpegts \
+            -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
+            -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
+            -t "$V_DUR" \
+            "hls_output/$TARGET_DIR/stream_%v.m3u8"; then
+            echo "❌ FFMPEG CRASHED! Skipping to next file..."; exit 1
+          fi
+          
+          if [ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8"; fi
+          
+          awk '{ if ($0 ~ /TYPE=AUDIO/) { gsub(/DEFAULT=YES/, "DEFAULT=NO", $0); print $0; } else { print $0; } }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+          if grep -q 'NAME="U_' "hls_output/$TARGET_DIR/master.m3u8"; then awk '/NAME="U_/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+          elif grep -q 'NAME="M_' "hls_output/$TARGET_DIR/master.m3u8"; then awk '/NAME="M_/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+          else awk '/TYPE=AUDIO/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+          fi
+          
+          awk '/^#EXT-X-STREAM-INF/ { if ($0 ~ /RESOLUTION=/) { getline n; } else { getline n; } next } { print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_clean.m3u8"
+          
+          BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+          if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
+            SIZE=$(stat -c %s "$VIDEO_FILE"); DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+            BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
+          fi
+          BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
+          
+          MANIFEST_RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
+          MANIFEST_RESOLUTION=$(echo "$MANIFEST_RESOLUTION" | head -n 1 | grep -oE '^[0-9]+x[0-9]+' || echo "1920x1080")
+          [ -z "$MANIFEST_RESOLUTION" ] && MANIFEST_RESOLUTION="1920x1080"
+          
+          if [[ "$VIDEO_CODEC" == "hevc" ]]; then VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
+          else VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""; fi
+          
+          VIDEO_MANIFEST_INJECTION=$(printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION" "$VIDEO_TAG_STR")
+          mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+          
+          HAS_SUBS="false"; echo "" >> "hls_output/$TARGET_DIR/master.m3u8"
+          VID_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+          VID_DUR_INT=$(printf "%.0f" "$VID_DUR" 2>/dev/null || echo "36000")
+          
+          while IFS=',' read -r index ctype lang title; do
+            if [[ "$ctype" == "subtitle" ]]; then
+              if [[ "$lang $title" =~ $LANG_REGEX ]]; then
+                SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle|dvd_subtitle)$ ]]; then
+                  if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" || "$SUB_CODEC" == "dvd_subtitle" ]]; then
+                    echo "🔍 Detected Graphical Subtitle (${lang:-unknown}). Dynamically Scaling to ${VID_W}x${VID_H} at ${VID_FPS_RAW} FPS..."
+                    PGS_DIR="subs_${index}_${lang:-unknown}"
+                    mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-            STREAMS=$(ffprobe -v error -show_streams -of json "$VIDEO_FILE" | jq -r '.streams[] | [.index, .codec_type, (.tags.language // "und"), (.tags.title // "")] | @csv' | tr '[:upper:]' '[:lower:]' | tr -d '"')
-            AUDIO_MAPS="-map 0:V:0"
-            VAR_STREAM_MAP="v:0,agroup:audio "
-            AUDIO_ENCODING=""
-            A_IDX=0; AUDIO_SED_CMDS=""
-            
-            LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ko|kor|korean)([^a-z]|$)"
-            AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean)([^a-z]|$)"
-            DETECTED_AUDIO=""; DETECTED_SUBS=""; DETECTED_PGS=""
-            
-            while IFS=',' read -r index ctype lang title; do
-              if [[ "$ctype" == "audio" ]]; then
-                if [[ "$lang $title" =~ $AUDIO_LANG_REGEX ]]; then
-                  CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-                  CHANNELS=$(ffprobe -v error -select_streams $index -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
-                  ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
-                  
-                  case "${lang,,}" in
-                    en|eng|english) DISPLAY_LANG="English" ;;
-                    hi|hin|hindi) DISPLAY_LANG="Hindi" ;;
-                    te|tel|telugu) DISPLAY_LANG="Telugu" ;;
-                    ja|jap|jpn|japan|japanese) DISPLAY_LANG="Japanese" ;;
-                    ko|kor|korean) DISPLAY_LANG="Korean" ;;
-                    *) DISPLAY_LANG="$(echo "${lang:-Unknown}" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
-                  esac
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
-                  if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
-                    ORIG_BITRATE_K="$((ORIG_BITRATE / 1000))k"; DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
-                  else ORIG_BITRATE_K="256k"; DISPLAY_BITRATE="Original"; fi
-                  
-                  IS_COMPATIBLE=0
-                  if [[ ! "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then IS_COMPATIBLE=1; fi
-                  IS_STEREO=0
-                  if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -le 2 ]]; then IS_STEREO=1; fi
-
-                  if [[ "$IS_COMPATIBLE" -eq 1 && "$IS_STEREO" -eq 1 ]]; then
-                    AUDIO_MAPS+=" -map 0:$index"
-                    VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
-                    AUDIO_ENCODING+=" -c:a:$A_IDX copy "
-                    AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"U_${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
-                    DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"; A_IDX=$((A_IDX + 1))
-                  else
-                    if [[ "$IS_STEREO" -eq 0 ]]; then TARGET_BITRATE_DISP="512kbps"; else TARGET_BITRATE_DISP="${DISPLAY_BITRATE}"; [[ "$TARGET_BITRATE_DISP" == "Original" ]] && TARGET_BITRATE_DISP="256kbps"; fi
-                    
-                    AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
-                    # FRONT-LOADED APAD FOR EOF HANGS
-                    if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
-                    else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "; fi
-                    AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
-                    
-                    AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
-                    # FRONT-LOADED APAD FOR EOF HANGS
-                    if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
-                    else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr "; fi
-                    AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"M_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
-                    DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
-                  fi
-                fi
-              fi
-            done <<< "$STREAMS"
-            
-            if [[ "$A_IDX" -eq 0 ]]; then
-              DETECTED_AUDIO="und"
-              DISPLAY_LANG="Unknown"
-              CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-              CHANNELS=$(ffprobe -v error -select_streams a:0 -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
-              ORIG_BITRATE=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
-              
-              if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
-                ORIG_BITRATE_K="$((ORIG_BITRATE / 1000))k"; DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
-              else ORIG_BITRATE_K="256k"; DISPLAY_BITRATE="Original"; fi
-              
-              IS_COMPATIBLE=0
-              if [[ ! "$CODEC" =~ ^(ac3|eac3|dts|truehd|flac|alac|wav|pcm.*|opus|vorbis)$ ]]; then IS_COMPATIBLE=1; fi
-              IS_STEREO=0
-              if [[ -n "$CHANNELS" && "$CHANNELS" =~ ^[0-9]+$ && "$CHANNELS" -le 2 ]]; then IS_STEREO=1; fi
-
-              if [[ "$IS_COMPATIBLE" -eq 1 && "$IS_STEREO" -eq 1 ]]; then
-                AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
-                AUDIO_ENCODING+=" -c:a:$A_IDX copy "; AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"U_${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
-                A_IDX=$((A_IDX + 1))
-              else
-                if [[ "$IS_STEREO" -eq 0 ]]; then TARGET_BITRATE_DISP="512kbps"; else TARGET_BITRATE_DISP="${DISPLAY_BITRATE}"; [[ "$TARGET_BITRATE_DISP" == "Original" ]] && TARGET_BITRATE_DISP="256kbps"; fi
-                
-                AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
-                # FRONT-LOADED APAD FOR EOF HANGS
-                if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
-                else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "; fi
-                AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
-                
-                AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
-                # FRONT-LOADED APAD FOR EOF HANGS
-                if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
-                else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr "; fi
-                AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"M_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
-              fi
-            fi
-            VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
-            
-            # ⏱️ FIX: PRE-CALCULATE EXACT VIDEO DURATION TO PREVENT HANGING AT EOF
-            # First, try to get the exact duration of the primary video stream
-            V_DUR=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | head -n 1)
-            
-            # Fallback: If the video stream duration is hidden, get the overall container duration
-            if [[ -z "$V_DUR" || "$V_DUR" == "N/A" ]]; then
-              V_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
-            fi
-            
-            # ---> FIX 2: LOG SILENCING (Prevents massive logs on embedded fonts/attachments) <---
-            if ! ffmpeg -nostdin -v error -stats -fflags +genpts -i "$VIDEO_FILE" \
-              $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
-              -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 \
-              -max_muxing_queue_size 9999 -f hls -hls_segment_type mpegts \
-              -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
-              -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
-              -t "$V_DUR" \
-              "hls_output/$TARGET_DIR/stream_%v.m3u8"; then
-              echo "❌ FFMPEG CRASHED! Skipping to next file..."; continue
-            fi
-            
-            if [ -n "$AUDIO_SED_CMDS" ]; then sed -i -e "$AUDIO_SED_CMDS" "hls_output/$TARGET_DIR/master.m3u8"; fi
-            
-            awk '{ if ($0 ~ /TYPE=AUDIO/) { gsub(/DEFAULT=YES/, "DEFAULT=NO", $0); print $0; } else { print $0; } }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
-            if grep -q 'NAME="U_' "hls_output/$TARGET_DIR/master.m3u8"; then awk '/NAME="U_/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
-            elif grep -q 'NAME="M_' "hls_output/$TARGET_DIR/master.m3u8"; then awk '/NAME="M_/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
-            else awk '/TYPE=AUDIO/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
-            fi
-            
-            awk '/^#EXT-X-STREAM-INF/ { if ($0 ~ /RESOLUTION=/) { getline n; } else { getline n; } next } { print $0 }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/master_clean.m3u8"
-            
-            BITRATE=$(ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
-            if [[ -z "$BITRATE" || "$BITRATE" == "N/A" ]]; then
-              SIZE=$(stat -c %s "$VIDEO_FILE"); DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
-              BITRATE=$(awk "BEGIN {print int(($SIZE * 8) / $DURATION)}")
-            fi
-            BANDWIDTH=$(awk "BEGIN {print int($BITRATE * 1.1)}")
-            
-            MANIFEST_RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null)
-            MANIFEST_RESOLUTION=$(echo "$MANIFEST_RESOLUTION" | head -n 1 | grep -oE '^[0-9]+x[0-9]+' || echo "1920x1080")
-            [ -z "$MANIFEST_RESOLUTION" ] && MANIFEST_RESOLUTION="1920x1080"
-            
-            if [[ "$VIDEO_CODEC" == "hevc" ]]; then VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
-            else VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""; fi
-            
-            VIDEO_MANIFEST_INJECTION=$(printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION" "$VIDEO_TAG_STR")
-            mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
-            
-            HAS_SUBS="false"; echo "" >> "hls_output/$TARGET_DIR/master.m3u8"
-            VID_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
-            VID_DUR_INT=$(printf "%.0f" "$VID_DUR" 2>/dev/null || echo "36000")
-            
-            while IFS=',' read -r index ctype lang title; do
-              if [[ "$ctype" == "subtitle" ]]; then
-                if [[ "$lang $title" =~ $LANG_REGEX ]]; then
-                  SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-                  if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle|dvd_subtitle)$ ]]; then
-                    if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" || "$SUB_CODEC" == "dvd_subtitle" ]]; then
-                      echo "🔍 Detected Graphical Subtitle (${lang:-unknown}). Dynamically Scaling to ${VID_W}x${VID_H} at ${VID_FPS_RAW} FPS..."
-                      PGS_DIR="subs_${index}_${lang:-unknown}"
-                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
-
-                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
-
-                      if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
-                        export VID_FPS_RAW="${VID_FPS_RAW}"
-                        export VID_W="${VID_W}"
-                        export VID_H="${VID_H}"
-                        python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
-                        
-                        if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
-                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                          echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
-                        else
-                          echo "❌ FFmpeg extraction produced empty XML (no visible events)."
-                          rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
-                        fi
+                    if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
+                      export VID_FPS_RAW="${VID_FPS_RAW}"
+                      export VID_W="${VID_W}"
+                      export VID_H="${VID_H}"
+                      python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
+                      
+                      if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
+                        DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                        echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
                       else
-                        echo "❌ FFmpeg failed to extract the graphical stream to images. Error Log:"
-                        cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
+                        echo "❌ FFmpeg extraction produced empty XML (no visible events)."
                         rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                       fi
-                      continue
+                    else
+                      echo "❌ FFmpeg failed to extract the graphical stream to images. Error Log:"
+                      cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
+                      rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                     fi
+                    continue
+                  fi
+                
+                  VTT_BASENAME="subs_${index}_${lang:-und}.vtt"; M3U8_BASENAME="subs_${index}_${lang:-und}.m3u8"
+                  VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
                   
-                    VTT_BASENAME="subs_${index}_${lang:-und}.vtt"; M3U8_BASENAME="subs_${index}_${lang:-und}.m3u8"
-                    VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
-                    
-                    if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
-                      if [ -s "$VTT_FILE" ]; then
-                        sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$VTT_FILE"
-                        HAS_SUBS="true"; DETECTED_SUBS="$DETECTED_SUBS ${lang:-und}"
-                        SUB_LANG="Unknown"
-                        case "${lang,,}" in
-                          en|eng|english) SUB_LANG="English" ;;
-                          *) [ -n "$lang" ] && SUB_LANG="$(echo "$lang" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
-                        esac
+                  if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$VTT_FILE" >/dev/null 2>&1; then
+                    if [ -s "$VTT_FILE" ]; then
+                      sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$VTT_FILE"
+                      HAS_SUBS="true"; DETECTED_SUBS="$DETECTED_SUBS ${lang:-und}"
+                      SUB_LANG="Unknown"
+                      case "${lang,,}" in
+                        en|eng|english) SUB_LANG="English" ;;
+                        hi|hin|hindi) SUB_LANG="Hindi" ;;
+                        te|tel|telugu) SUB_LANG="Telugu" ;;
+                        ja|jap|jpn|japan|japanese) SUB_LANG="Japanese" ;;
+                        ko|kor|korean) SUB_LANG="Korean" ;;
+                        *) [ -n "$lang" ] && SUB_LANG="$(echo "$lang" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
+                      esac
 
-                        CLEAN_TITLE=$(echo "$title" | tr -cd 'a-zA-Z0-9 ()[]_-' | sed 's/^ *//;s/ *$//')
-                        CLEAN_TITLE="$(echo "$CLEAN_TITLE" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2)); print $0}')"
-                        CLEAN_TITLE=$(echo "$CLEAN_TITLE" | sed 's/\bSdh\b/SDH/g; s/\bCc\b/CC/g')
+                      CLEAN_TITLE=$(echo "$title" | tr -cd 'a-zA-Z0-9 ()[]_-' | sed 's/^ *//;s/ *$//')
+                      CLEAN_TITLE="$(echo "$CLEAN_TITLE" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2)); print $0}')"
+                      CLEAN_TITLE=$(echo "$CLEAN_TITLE" | sed 's/\bSdh\b/SDH/g; s/\bCc\b/CC/g')
 
-                        if [[ "${CLEAN_TITLE,,}" == "${lang,,}" || "${CLEAN_TITLE,,}" == "${SUB_LANG,,}" ]]; then CLEAN_TITLE=""; fi
-                        if [ -n "$CLEAN_TITLE" ]; then
-                          if [[ "${CLEAN_TITLE,,}" == "${SUB_LANG,,}"* ]]; then FINAL_SUB_NAME="$CLEAN_TITLE"
-                          else FINAL_SUB_NAME="${SUB_LANG} - ${CLEAN_TITLE}"; fi
-                        else FINAL_SUB_NAME="${SUB_LANG}"; fi
-                        [ -z "$FINAL_SUB_NAME" ] && FINAL_SUB_NAME="Sub_${index}"
-                        
-                        printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "$M3U8_FILE"
-                        printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="%s",LANGUAGE="%s",URI="%s"\n' "$FINAL_SUB_NAME" "${lang:-und}" "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"
-                      else rm -f "$VTT_FILE"; fi
-                    fi
+                      if [[ "${CLEAN_TITLE,,}" == "${lang,,}" || "${CLEAN_TITLE,,}" == "${SUB_LANG,,}" ]]; then CLEAN_TITLE=""; fi
+                      if [ -n "$CLEAN_TITLE" ]; then
+                        if [[ "${CLEAN_TITLE,,}" == "${SUB_LANG,,}"* ]]; then FINAL_SUB_NAME="$CLEAN_TITLE"
+                        else FINAL_SUB_NAME="${SUB_LANG} - ${CLEAN_TITLE}"; fi
+                      else FINAL_SUB_NAME="${SUB_LANG}"; fi
+                      [ -z "$FINAL_SUB_NAME" ] && FINAL_SUB_NAME="Sub_${index}"
+                      
+                      printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "$M3U8_FILE"
+                      printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="%s",LANGUAGE="%s",URI="%s"\n' "$FINAL_SUB_NAME" "${lang:-und}" "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"
+                    else rm -f "$VTT_FILE"; fi
                   fi
                 fi
               fi
-            done <<< "$STREAMS"
-            
-            if [[ "$HAS_SUBS" == "false" && -z "$DETECTED_PGS" ]]; then
-              echo "⚠️ No matching subtitles found. Scanning unidentified tracks for English or available Graphics..."
-              cat << 'EOF' > detect_eng.py
+            fi
+          done <<< "$STREAMS"
+          
+          if [[ "$HAS_SUBS" == "false" && -z "$DETECTED_PGS" ]]; then
+            echo "⚠️ No matching subtitles found. Scanning unidentified tracks for English or available Graphics..."
+            cat << 'EOF2' > detect_eng.py
           import sys, re
           try:
               with open(sys.argv[1], 'r', encoding='utf-8', errors='ignore') as f: text = f.read().lower()
@@ -727,75 +735,81 @@ jobs:
               eng = {'the','and','that','have','for','not','with','you','this','but','his','from','they','say','she','will','what','who','get','when','make','can','like','time','just','know','take','your','good','some','could','them','other','than','then','now','look','only','come','over','think','also','back','after','how','our','first','well','way','even','want','because','any','these','give','most','are','was','were'}
               print('true' if sum(1 for w in words if w in eng) > 15 else 'false')
           except: print('false')
-          EOF
+          EOF2
 
-              while IFS=',' read -r index ctype lang title; do
-                if [[ "$ctype" == "subtitle" ]]; then
-                  SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-                  if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle|dvd_subtitle)$ ]]; then
-                    if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" || "$SUB_CODEC" == "dvd_subtitle" ]]; then
-                      echo "🔍 Extracting untagged Graphical Subtitle via Native FFmpeg..."
-                      PGS_DIR="subs_${index}_unknown"
-                      mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
+            while IFS=',' read -r index ctype lang title; do
+              if [[ "$ctype" == "subtitle" ]]; then
+                SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle|dvd_subtitle)$ ]]; then
+                  if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" || "$SUB_CODEC" == "dvd_subtitle" ]]; then
+                    echo "🔍 Extracting untagged Graphical Subtitle via Native FFmpeg..."
+                    PGS_DIR="subs_${index}_unknown"
+                    mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                      ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
-                      if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
-                        export VID_FPS_RAW="${VID_FPS_RAW}"
-                        export VID_W="${VID_W}"
-                        export VID_H="${VID_H}"
-                        python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
-                        
-                        if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
-                          DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                          echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
-                        else
-                          echo "❌ FFmpeg extraction produced empty XML (no visible events)."
-                          rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
-                        fi
-                        break
+                    if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
+                      export VID_FPS_RAW="${VID_FPS_RAW}"
+                      export VID_W="${VID_W}"
+                      export VID_H="${VID_H}"
+                      python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
+                      
+                      if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
+                        DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                        echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
                       else
-                        echo "❌ FFmpeg failed to extract the untagged graphical stream to images. Error Log:"
-                        cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
+                        echo "❌ FFmpeg extraction produced empty XML (no visible events)."
                         rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                       fi
-                      continue
+                      break
+                    else
+                      echo "❌ FFmpeg failed to extract the untagged graphical stream to images. Error Log:"
+                      cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
+                      rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                     fi
+                    continue
+                  fi
 
-                    TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
-                    if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1; then
-                      if [ -s "$TEMP_VTT" ]; then
-                        IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")
-                        if [[ "$IS_ENGLISH" == "true" ]]; then
-                          sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$TEMP_VTT"
-                          VTT_BASENAME="subs_${index}_eng.vtt"; M3U8_BASENAME="subs_${index}_eng.m3u8"
-                          mv "$TEMP_VTT" "hls_output/$TARGET_DIR/$VTT_BASENAME"
-                          HAS_SUBS="true"; DETECTED_SUBS="$DETECTED_SUBS eng"
-                          printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "hls_output/$TARGET_DIR/$M3U8_BASENAME"
-                          printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="English (Auto)",LANGUAGE="eng",URI="%s"\n' "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"
-                          break
-                        else rm -f "$TEMP_VTT"; fi
+                  TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
+                  if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1; then
+                    if [ -s "$TEMP_VTT" ]; then
+                      IS_ENGLISH=$(python detect_eng.py "$TEMP_VTT")
+                      if [[ "$IS_ENGLISH" == "true" ]]; then
+                        sed -i '1s/^WEBVTT.*/WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0/' "$TEMP_VTT"
+                        VTT_BASENAME="subs_${index}_eng.vtt"; M3U8_BASENAME="subs_${index}_eng.m3u8"
+                        mv "$TEMP_VTT" "hls_output/$TARGET_DIR/$VTT_BASENAME"
+                        HAS_SUBS="true"; DETECTED_SUBS="$DETECTED_SUBS eng"
+                        printf "#EXTM3U\n#EXT-X-TARGETDURATION:%s\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%s,\n%s\n#EXT-X-ENDLIST\n" "$VID_DUR_INT" "$VID_DUR" "$VTT_BASENAME" > "hls_output/$TARGET_DIR/$M3U8_BASENAME"
+                        printf '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="group_subs",NAME="English (Auto)",LANGUAGE="eng",URI="%s"\n' "$M3U8_BASENAME" >> "hls_output/$TARGET_DIR/master.m3u8"
+                        break
                       else rm -f "$TEMP_VTT"; fi
-                    fi
+                    else rm -f "$TEMP_VTT"; fi
                   fi
                 fi
-              done <<< "$STREAMS"
-              rm -f detect_eng.py
-            fi
-            
-            if [[ "$HAS_SUBS" == "true" ]]; then VIDEO_MANIFEST_INJECTION=$(echo "$VIDEO_MANIFEST_INJECTION" | sed 's/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/'); fi
-            echo "$VIDEO_MANIFEST_INJECTION" >> "hls_output/$TARGET_DIR/master.m3u8"
-            
-            HF_BASE="https://huggingface.co/buckets/${{ secrets.HF_BUCKET }}/${TARGET_DIR}/"
-            HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
-            find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
+              fi
+            done <<< "$STREAMS"
+            rm -f detect_eng.py
+          fi
+          
+          if [[ "$HAS_SUBS" == "true" ]]; then VIDEO_MANIFEST_INJECTION=$(echo "$VIDEO_MANIFEST_INJECTION" | sed 's/AUDIO="group_audio"/AUDIO="group_audio",SUBTITLES="group_subs"/'); fi
+          echo "$VIDEO_MANIFEST_INJECTION" >> "hls_output/$TARGET_DIR/master.m3u8"
+          
+          HF_BASE="https://huggingface.co/buckets/${HF_BUCKET}/${TARGET_DIR}/"
+          HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
+          find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
 
-            python metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "${DETECTED_AUDIO:-und}" "${DETECTED_SUBS:-}" "$IS_IMAX" "$IS_HDR" "$VARIATION" "$RESOLUTION" "${DETECTED_PGS:-}"
+          python metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "${DETECTED_AUDIO:-und}" "${DETECTED_SUBS:-}" "$IS_IMAX" "$IS_HDR" "$VARIATION" "$RESOLUTION" "${DETECTED_PGS:-}"
 
-            # 🔥 NEW: Delete the massive original source file to free up runner disk space
-            echo "🗑️ Discarding original file to reclaim disk space: $VIDEO_FILE"
-            rm -f "$VIDEO_FILE"
-
+          # 🔥 NEW: Delete the massive original source file to free up runner disk space
+          echo "🗑️ Discarding original file to reclaim disk space: $VIDEO_FILE"
+          rm -f "$VIDEO_FILE"
+          EOF
+          
+          mkdir -p hls_output
+          chmod +x worker.sh
+          
+          while read -u 9 VIDEO_FILE; do
+            ./worker.sh "$VIDEO_FILE"
           done 9< <(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \))
           
           if [ ! -d "hls_output" ] || [ -z "$(ls -A hls_output)" ]; then

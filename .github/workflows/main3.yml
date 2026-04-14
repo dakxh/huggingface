@@ -23,7 +23,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp imagemagick
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
 
       - name: Acknowledge Payload
@@ -674,8 +674,10 @@ jobs:
                       python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
                       
                       if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
+                        echo "✂️ Trimming transparent padding via ImageMagick..."
+                        mogrify -trim "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp
                         DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                        echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
+                        echo "✅ Successfully extracted and cropped Native FFmpeg flattened WebP Sprites!"
                       else
                         echo "❌ FFmpeg extraction produced empty XML (no visible events)."
                         rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
@@ -755,8 +757,10 @@ jobs:
                       python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
                       
                       if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
+                        echo "✂️ Trimming transparent padding via ImageMagick..."
+                        mogrify -trim "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp
                         DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                        echo "✅ Successfully extracted Native FFmpeg flattened WebP Sprites!"
+                        echo "✅ Successfully extracted and cropped Native FFmpeg flattened WebP Sprites!"
                       else
                         echo "❌ FFmpeg extraction produced empty XML (no visible events)."
                         rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"

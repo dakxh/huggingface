@@ -655,10 +655,6 @@ jobs:
                       SUB_LANG="Unknown"
                       case "${lang,,}" in
                         en|eng|english) SUB_LANG="English" ;;
-                        hi|hin|hindi) SUB_LANG="Hindi" ;;
-                        te|tel|telugu) SUB_LANG="Telugu" ;;
-                        ja|jap|jpn|japan|japanese) SUB_LANG="Japanese" ;;
-                        ko|kor|korean) SUB_LANG="Korean" ;;
                         *) [ -n "$lang" ] && SUB_LANG="$(echo "$lang" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                       esac
 

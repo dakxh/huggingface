@@ -226,8 +226,8 @@ jobs:
           pgs_str = sys.argv[10] if len(sys.argv) > 10 else ""
           
           is_imax, is_hdr = is_imax_str.lower() == 'true', is_hdr_str.lower() == 'true'
-          available_audio = list(set([x.strip() for x in audio_str.split() if x.strip()]))
-          available_subs = list(set([x.strip() for x in subs_str.split() if x.strip()]))
+          available_audio_json = json.dumps(list(set([x.strip() for x in audio_str.split() if x.strip()])))
+          available_subs_json = json.dumps(list(set([x.strip() for x in subs_str.split() if x.strip()])))
           date_added = int(time.time())
           
           filename = os.path.basename(file_path)
@@ -239,13 +239,9 @@ jobs:
           if year_matches:
               last_year_match = year_matches[-1]
               raw_prefix = filename[:last_year_match.start()]
-              
-              # ---> FIX: Sever TV Show tags (S01E01, S02, etc.) before treating the string as a title
               raw_prefix = re.split(r'(?i)[ _.-]+(?:S\d{1,2}E\d{1,4}|S\d{1,2}|Season\s?\d{1,2}|E\d{1,4})\b', raw_prefix)[0]
-              
               regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
-              if len(regex_title) > len(title) and regex_title.lower() != 'unknown': 
-                  title = regex_title
+              if len(regex_title) > len(title) and regex_title.lower() != 'unknown': title = regex_title
               year = last_year_match.group(1)
           else: year = str(g.get('year', ''))
           if not title: title = 'Unknown Title'
@@ -260,12 +256,8 @@ jobs:
           def format_dur(secs):
               h, m = int(secs // 3600), int((secs % 3600) // 60)
               return f'{h}h{m}m' if h > 0 else f'{m}m'
-              
           duration_formatted = format_dur(dur_seconds)
-          size_bytes = os.path.getsize(file_path)
-          size_str = f'{round(size_bytes / (1024**3), 2)} GB'
 
-          # ⚡ URL UPDATE FOR BUCKETS ⚡
           hf_bucket = os.environ.get('HF_BUCKET', '')
           safe_target_dir = urllib.parse.quote(target_dir)
           manifest_url = f'https://huggingface.co/buckets/{hf_bucket}/{safe_target_dir}/master.m3u8'
@@ -277,14 +269,32 @@ jobs:
               try: lbl = p.split('/')[0].split('_', 2)[-1]
               except: lbl = "Unknown Overlay"
               pgs_overlays_final.append({'url': f'https://huggingface.co/buckets/{hf_bucket}/{safe_target_dir}/{urllib.parse.quote(p)}', 'label': lbl.capitalize()})
+          pgs_overlays_json = json.dumps(pgs_overlays_final)
 
-          catalog_path = 'hls_output/session_catalog.json'
-          try:
-              with open(catalog_path, 'r') as f: catalog = json.load(f)
-          except: catalog =[]
-              
+          payload = {"media": {"type": "series" if sub_dir else "movie", "title": title, "year": year, "rating": 0.0, "poster_url": "", "backdrop_url": ""}}
+          
+          # Fetch TMDB Data and set primary Media ID
+          media_id_str = re.sub(r'[^a-z0-9]', '', f"{title.lower()}{year}")
+          if tmdb_key and title != 'Unknown Title':
+              search_type = 'tv' if sub_dir else 'movie'
+              search_url = f'https://api.themoviedb.org/3/search/{search_type}?api_key={tmdb_key}&query={title}'
+              if year: search_url += f'&year={year}' if search_type == 'movie' else f'&first_air_date_year={year}'
+              try:
+                  res = requests.get(search_url).json()
+                  if res.get('results'):
+                      match = res['results'][0]
+                      media_id_str = str(match.get('id', media_id_str))
+                      payload["media"]["title"] = match.get('name' if sub_dir else 'title', title)
+                      if not payload["media"]["year"]: payload["media"]["year"] = match.get('first_air_date' if sub_dir else 'release_date', '')[:4]
+                      payload["media"]["rating"] = round(match.get('vote_average', 0.0), 1)
+                      if match.get('poster_path'): payload["media"]["poster_url"] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get('poster_path')}"
+                      if match.get('backdrop_path'): payload["media"]["backdrop_url"] = f"https://image.tmdb.org/t/p/original{match.get('backdrop_path')}"
+              except: pass
+          
+          payload["media"]["id"] = media_id_str
+
           if sub_dir:
-              # ====== TV SHOW (LOCAL LOGGER MODE) ======
+              # ====== EPISODE METADATA ======
               s_val, e_val = g.get('season'), g.get('episode')
               if not s_val:
                   s_match = re.search(r'[Ss](\d{1,2})[Ee]\d', filename)
@@ -296,97 +306,37 @@ jobs:
               season_num = int(s_val[0] if isinstance(s_val, list) else s_val) if s_val is not None and str(s_val).strip() != "" else 1
               episode_num = int(e_val[0] if isinstance(e_val, list) else e_val) if e_val is not None and str(e_val).strip() != "" else 1
               
-              # Append to Local Batch Log for JIT Merger
-              batch_log_path = 'hls_output/local_batch_log.json'
-              try:
-                  with open(batch_log_path, 'r') as f: batch_log = json.load(f)
-              except: batch_log = {}
-              
-              if base_dir not in batch_log:
-                  batch_log[base_dir] = {'id': 0, 'type': 'series', 'title': title, 'year': year, 'rating': 0.0, 'quality': resolution_str, 'duration': '0m', 'IMAX': is_imax, 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'overview': '', 'date_added': date_added, '_total_secs': 0.0, '_ep_count': 0, 'episodes':[]}
-                  
-                  if tmdb_key and title != 'Unknown Title':
-                      try:
-                          res = requests.get(f'https://api.themoviedb.org/3/search/tv?api_key={tmdb_key}&query={title}').json()
-                          if res.get('results'):
-                              match = res['results'][0]
-                              batch_log[base_dir]['id'] = match.get('id', 0)
-                              batch_log[base_dir]['title'] = match.get('name', title)
-                              if not batch_log[base_dir]['year']: batch_log[base_dir]['year'] = match.get('first_air_date', '')[:4]
-                              batch_log[base_dir]['overview'] = match.get('overview', '')
-                              batch_log[base_dir]['rating'] = round(match.get('vote_average', 0.0), 1)
-                              if match.get('poster_path'): batch_log[base_dir]['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get('poster_path')}"
-                      except: pass
-              
-              batch_log[base_dir]['_total_secs'] += dur_seconds
-              batch_log[base_dir]['_ep_count'] += 1
-              batch_log[base_dir]['duration'] = format_dur(batch_log[base_dir]['_total_secs'] / batch_log[base_dir]['_ep_count'])
-              batch_log[base_dir]['quality'] = resolution_str
-              if is_imax: batch_log[base_dir]['IMAX'] = True
-              if is_hdr: batch_log[base_dir]['HDR'] = True
-              
               episode_name = f'Episode {episode_num}'
-              if tmdb_key and batch_log[base_dir]['id'] != 0:
+              if tmdb_key and media_id_str.isdigit():
                   try:
-                      ep_res = requests.get(f'https://api.themoviedb.org/3/tv/{batch_log[base_dir]["id"]}/season/{season_num}/episode/{episode_num}?api_key={tmdb_key}').json()
+                      ep_res = requests.get(f'https://api.themoviedb.org/3/tv/{media_id_str}/season/{season_num}/episode/{episode_num}?api_key={tmdb_key}').json()
                       if ep_res.get('name'): episode_name = ep_res['name']
                   except: pass
               
-              ep_entry = {'season_number': season_num, 'episode_number': episode_num, 'episode_name': episode_name, 'quality': resolution_str, 'date_added': date_added, 'hls_manifest_url': manifest_url}
-              
-              batch_log[base_dir]['episodes'] = [ep for ep in batch_log[base_dir].get('episodes', []) if not (ep['season_number']==season_num and ep['episode_number']==episode_num)]
-              batch_log[base_dir]['episodes'].append(ep_entry)
-              batch_log[base_dir]['episodes'] = sorted(batch_log[base_dir]['episodes'], key=lambda x: (x['season_number'], x['episode_number']))
-              
-              with open(batch_log_path, 'w') as f: json.dump(batch_log, f, indent=4)
-                  
-              ep_meta = {'id': batch_log[base_dir]['id'], 'series_title': batch_log[base_dir]['title'], 'season_number': season_num, 'episode_number': episode_num, 'episode_name': episode_name, 'original_filename': filename, 'quality': resolution_str, 'duration': duration_formatted, 'size': size_str, 'available_audio': available_audio, 'available_subs': available_subs, 'pgs_overlays': pgs_overlays_final, 'date_added': date_added, 'hls_manifest_url': manifest_url}
-              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(ep_meta, f, indent=4)
-                  
-              series_metadata_url = f"https://huggingface.co/buckets/{hf_bucket}/{urllib.parse.quote(base_dir)}/metadata.json"
-              catalog =[item for item in catalog if item.get('type') != 'episode']
-              catalog =[item for item in catalog if not (item.get('type') == 'series' and item.get('title') == batch_log[base_dir]['title'])]
-              
-              catalog.append({'id': batch_log[base_dir]['id'], 'type': 'series', 'title': batch_log[base_dir]['title'], 'year': batch_log[base_dir]['year'], 'quality': resolution_str, 'date_added': date_added, 'series_metadata_url': series_metadata_url, 'poster_url': batch_log[base_dir].get('poster_url', '')})
+              payload["episode"] = {
+                  "id": f"ep_{media_id_str}_S{season_num:02d}E{episode_num:02d}",
+                  "media_id": media_id_str, "season_number": season_num, "episode_number": episode_num,
+                  "episode_name": episode_name, "duration": duration_formatted, "date_added": date_added,
+                  "hls_manifest_url": manifest_url, "available_audio": available_audio_json,
+                  "available_subs": available_subs_json, "pgs_overlays": pgs_overlays_json
+              }
           else:
-              # ====== MOVIE ======
-              movie_meta = {'id': 0, 'type': 'movie', 'original_filename': filename, 'title': title, 'year': year, 'rating': 0.0, 'quality': resolution_str, 'duration': duration_formatted, 'IMAX': is_imax, 'HDR': is_hdr, 'poster_url': '', 'backdrop_url': '', 'hls_manifest_url': manifest_url, 'overview': '', 'available_audio': available_audio, 'available_subs': available_subs, 'pgs_overlays': pgs_overlays_final, 'date_added': date_added}
-              
-              if tmdb_key and title != 'Unknown Title':
-                  search_url = f'https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={title}'
-                  if year: search_url += f'&year={year}'
-                  try:
-                      res = requests.get(search_url).json()
-                      if res.get('results'):
-                          match = res['results'][0]
-                          movie_meta['id'], movie_meta['title'], movie_meta['overview'], movie_meta['rating'] = match.get('id', 0), match.get('title', title), match.get('overview', ''), round(match.get('vote_average', 0.0), 1)
-                          if not movie_meta['year']: movie_meta['year'] = match.get('release_date', '')[:4]
-                          if match.get('poster_path'): movie_meta['poster_url'] = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{match.get('poster_path')}"
-                  except: pass
-                  
-              with open(f'hls_output/{target_dir}/metadata.json', 'w') as f: json.dump(movie_meta, f, indent=4)
-                  
-              existing_idx = next((i for i, item in enumerate(catalog) if item.get('type') == 'movie' and item.get('title') == movie_meta['title'] and item.get('year') == movie_meta['year']), None)
-                      
-              if existing_idx is not None:
-                  if 'quality' in catalog[existing_idx]: del catalog[existing_idx]['quality']
-                  catalog[existing_idx].setdefault('available_resolutions', [])
-                  catalog[existing_idx].setdefault('available_variations',[])
-                  if not isinstance(catalog[existing_idx].get('hls_manifest_url'), dict): catalog[existing_idx]['hls_manifest_url'] = {}
-                  
-                  if resolution_str not in catalog[existing_idx]['available_resolutions']:
-                      catalog[existing_idx]['available_resolutions'].append(resolution_str)
-                      catalog[existing_idx]['available_resolutions'] = sorted(catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
-                      
-                  if variation_str not in catalog[existing_idx]['available_variations']: catalog[existing_idx]['available_variations'].append(variation_str)
-                  catalog[existing_idx]['hls_manifest_url'][variation_str] = manifest_url
-                  if catalog[existing_idx]['id'] == 0 and movie_meta['id'] != 0:
-                      catalog[existing_idx]['id'], catalog[existing_idx]['poster_url'] = movie_meta['id'], movie_meta.get('poster_url', '')
-                  catalog[existing_idx]['date_added'] = date_added
-              else:
-                  catalog.append({'id': movie_meta['id'], 'type': 'movie', 'title': movie_meta['title'], 'year': movie_meta['year'], 'date_added': date_added, 'available_resolutions': [resolution_str], 'available_variations': [variation_str], 'hls_manifest_url': {variation_str: manifest_url}, 'poster_url': movie_meta.get('poster_url', '')})
-              
-          with open(catalog_path, 'w') as f: json.dump(catalog, f, indent=4)
+              # ====== MOVIE METADATA ======
+              payload["movie_source"] = {
+                  "id": f"movie_{media_id_str}_{variation_str}",
+                  "media_id": media_id_str, "variation_name": variation_str, "quality": resolution_str,
+                  "is_imax": is_imax, "is_hdr": is_hdr, "hls_manifest_url": manifest_url,
+                  "available_audio": available_audio_json, "available_subs": available_subs_json, "pgs_overlays": pgs_overlays_json
+              }
+          
+          # Safely append to the temporary D1 payload array
+          payloads_path = 'd1_payloads.json'
+          try:
+              with open(payloads_path, 'r') as f: payloads = json.load(f)
+          except: payloads = []
+          
+          payloads.append(payload)
+          with open(payloads_path, 'w') as f: json.dump(payloads, f, indent=4)
           EOF
 
           cat << 'EOF' > generate_bdn.py
@@ -512,6 +462,7 @@ jobs:
                 CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
                 CHANNELS=$(ffprobe -v error -select_streams $index -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
                 ORIG_BITRATE=$(ffprobe -v error -select_streams $index -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
+                ORIG_SR=$(ffprobe -v error -select_streams $index -show_entries stream=sample_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
                 
                 case "${lang,,}" in
                   en|eng|english) DISPLAY_LANG="English" ;;
@@ -538,19 +489,21 @@ jobs:
                   AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"U_${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
                   DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"; A_IDX=$((A_IDX + 1))
                 else
-                  if [[ "$IS_STEREO" -eq 0 ]]; then TARGET_BITRATE_DISP="512kbps"; else TARGET_BITRATE_DISP="${DISPLAY_BITRATE}"; [[ "$TARGET_BITRATE_DISP" == "Original" ]] && TARGET_BITRATE_DISP="256kbps"; fi
+                  if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                    if [ "$ORIG_BITRATE" -lt 512000 ]; then TARGET_BITRATE_K="$((ORIG_BITRATE / 1000))k"; TARGET_BITRATE_DISP="$((ORIG_BITRATE / 1000))kbps"
+                    else TARGET_BITRATE_K="512k"; TARGET_BITRATE_DISP="512kbps"; fi
+                  else TARGET_BITRATE_K="512k"; TARGET_BITRATE_DISP="512kbps"; fi
+                  
+                  if [[ -z "$ORIG_SR" || ! "$ORIG_SR" =~ ^[0-9]+$ ]]; then TARGET_SR=48000
+                  elif [ "$ORIG_SR" -eq 44100 ]; then TARGET_SR=44100
+                  else TARGET_SR=48000; fi
                   
                   AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
-                  # FRONT-LOADED APAD FOR EOF HANGS
-                  if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
-                  else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "; fi
+                  
+                  if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "
+                  else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "; fi
                   AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
                   
-                  AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
-                  # FRONT-LOADED APAD FOR EOF HANGS
-                  if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
-                  else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr "; fi
-                  AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"M_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
                   DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
                 fi
               fi
@@ -563,6 +516,7 @@ jobs:
             CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
             CHANNELS=$(ffprobe -v error -select_streams a:0 -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
             ORIG_BITRATE=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
+            ORIG_SR=$(ffprobe -v error -select_streams a:0 -show_entries stream=sample_rate -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]')
             
             if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
               ORIG_BITRATE_K="$((ORIG_BITRATE / 1000))k"; DISPLAY_BITRATE="$((ORIG_BITRATE / 1000))kbps"
@@ -578,19 +532,20 @@ jobs:
               AUDIO_ENCODING+=" -c:a:$A_IDX copy "; AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"U_${DISPLAY_LANG} - ${DISPLAY_BITRATE}\"/g; "
               A_IDX=$((A_IDX + 1))
             else
-              if [[ "$IS_STEREO" -eq 0 ]]; then TARGET_BITRATE_DISP="512kbps"; else TARGET_BITRATE_DISP="${DISPLAY_BITRATE}"; [[ "$TARGET_BITRATE_DISP" == "Original" ]] && TARGET_BITRATE_DISP="256kbps"; fi
+              if [[ -n "$ORIG_BITRATE" && "$ORIG_BITRATE" =~ ^[0-9]+$ ]]; then
+                if [ "$ORIG_BITRATE" -lt 512000 ]; then TARGET_BITRATE_K="$((ORIG_BITRATE / 1000))k"; TARGET_BITRATE_DISP="$((ORIG_BITRATE / 1000))kbps"
+                else TARGET_BITRATE_K="512k"; TARGET_BITRATE_DISP="512kbps"; fi
+              else TARGET_BITRATE_K="512k"; TARGET_BITRATE_DISP="512kbps"; fi
+              
+              if [[ -z "$ORIG_SR" || ! "$ORIG_SR" =~ ^[0-9]+$ ]]; then TARGET_SR=48000
+              elif [ "$ORIG_SR" -eq 44100 ]; then TARGET_SR=44100
+              else TARGET_SR=48000; fi
               
               AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
-              # FRONT-LOADED APAD FOR EOF HANGS
-              if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
-              else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "; fi
+              
+              if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "
+              else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "; fi
               AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
-              
-              AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
-              # FRONT-LOADED APAD FOR EOF HANGS
-              if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX 512k -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,pan=5.1|FL=FL+0.7*FC|FR=FR+0.7*FC|FC=1.8*FC|LFE=LFE|BL=BL|BR=BR,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:resampler=soxr "
-              else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${ORIG_BITRATE_K} -filter:a:$A_IDX apad,acompressor=threshold=-4dB:ratio=2:attack=5:release=300:makeup=2.5,dynaudnorm=f=150:g=15:m=40.0,aformat=channel_layouts=stereo,aresample=resampler=soxr "; fi
-              AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"M_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
             fi
           fi
           VAR_STREAM_MAP="${VAR_STREAM_MAP% }"
@@ -628,7 +583,7 @@ jobs:
           
           awk '{ if ($0 ~ /TYPE=AUDIO/) { gsub(/DEFAULT=YES/, "DEFAULT=NO", $0); print $0; } else { print $0; } }' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
           if grep -q 'NAME="U_' "hls_output/$TARGET_DIR/master.m3u8"; then awk '/NAME="U_/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
-          elif grep -q 'NAME="M_' "hls_output/$TARGET_DIR/master.m3u8"; then awk '/NAME="M_/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
+          elif grep -q 'NAME="P_' "hls_output/$TARGET_DIR/master.m3u8"; then awk '/NAME="P_/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
           else awk '/TYPE=AUDIO/{ if (!done) { sub(/DEFAULT=NO/, "DEFAULT=YES"); done=1 } } 1' "hls_output/$TARGET_DIR/master.m3u8" > "hls_output/$TARGET_DIR/temp.m3u8" && mv "hls_output/$TARGET_DIR/temp.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
           fi
           
@@ -820,79 +775,14 @@ jobs:
             echo "❌ CRITICAL ERROR: hls_output is empty. Processing failed."
             exit 1
           fi
-
-      - name: Just-In-Time (JIT) Metadata Merger
-        if: env.found == 'true'
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_BUCKET: ${{ secrets.HF_BUCKET }}
-        run: |
-          python3 -c "
-          import os, json, requests, urllib.parse
-          
-          hf_token = os.environ.get('HF_TOKEN', '')
-          hf_bucket = os.environ.get('HF_BUCKET', '')
-          headers = {'Authorization': f'Bearer {hf_token}'} if hf_token else {}
-          
-          batch_log_path = 'hls_output/local_batch_log.json'
-          if not os.path.exists(batch_log_path):
-              print('No local batch log found. Skipping JIT merge.')
-              exit(0)
-              
-          with open(batch_log_path, 'r') as f:
-              batch_log = json.load(f)
-              
-          def format_dur(secs): 
-              h, m = int(secs//3600), int((secs%3600)//60)
-              return f'{h}h{m}m' if h>0 else f'{m}m'
-              
-          for base_dir, new_meta in batch_log.items():
-              cloud_url = f'https://huggingface.co/buckets/{hf_bucket}/resolve/{urllib.parse.quote(base_dir)}/metadata.json'
-              
-              try:
-                  r = requests.get(cloud_url, headers=headers, timeout=10)
-                  if r.status_code == 200:
-                      cloud_meta = r.json()
-                      for key in ['title', 'overview', 'rating', 'year', 'poster_url', 'backdrop_url', 'id', 'quality', 'IMAX', 'HDR']:
-                          if new_meta.get(key): cloud_meta[key] = new_meta[key]
-                      
-                      cloud_meta['_total_secs'] = cloud_meta.get('_total_secs', 0.0) + new_meta.get('_total_secs', 0.0)
-                      cloud_meta['_ep_count'] = cloud_meta.get('_ep_count', 0) + new_meta.get('_ep_count', 0)
-                      cloud_meta['duration'] = format_dur(cloud_meta['_total_secs'] / max(cloud_meta['_ep_count'], 1))
-                      
-                      cloud_episodes = cloud_meta.get('episodes', [])
-                      for new_ep in new_meta.get('episodes', []):
-                          cloud_episodes = [ep for ep in cloud_episodes if not (ep.get('season_number') == new_ep['season_number'] and ep.get('episode_number') == new_ep['episode_number'])]
-                          cloud_episodes.append(new_ep)
-                          
-                      cloud_episodes.sort(key=lambda x: (x.get('season_number', 0), x.get('episode_number', 0)))
-                      cloud_meta['episodes'] = cloud_episodes
-                      cloud_meta['date_added'] = new_meta.get('date_added', 0)
-                      
-                      final_meta = cloud_meta
-                  else:
-                      final_meta = new_meta
-                      final_meta['duration'] = format_dur(final_meta.get('_total_secs', 0.0) / max(final_meta.get('_ep_count', 1), 1))
-              except Exception as e:
-                  print(f'Error fetching {cloud_url}: {e}. Using local data.')
-                  final_meta = new_meta
-                  final_meta['duration'] = format_dur(final_meta.get('_total_secs', 0.0) / max(final_meta.get('_ep_count', 1), 1))
-                  
-              with open(f'hls_output/{base_dir}/metadata.json', 'w') as f:
-                  json.dump(final_meta, f, indent=4)
-                  
-          print('✅ JIT Metadata Merge completed.')
-          "
           
       - name: Sync Output to Storage Bucket
         if: env.found == 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_BUCKET: ${{ secrets.HF_BUCKET }} # Or HF_ANIME_BUCKET depending on the workflow
+          HF_BUCKET: ${{ secrets.HF_BUCKET }}
         run: |
-          mv hls_output/session_catalog.json ./session_catalog.json || true
           rm -f hls_output/*.torrent hls_output/*.zip hls_output/temp_* || true
-          rm -f hls_output/local_batch_log.json || true
           
           python3 -c "
           import os
@@ -901,100 +791,42 @@ jobs:
           bucket = os.environ.get('HF_BUCKET')
           
           print('⚡ Initiating targeted Storage Bucket sync...')
-          
-          # Iterate through generated items rather than scanning the whole root bucket
           for item in os.listdir('./hls_output'):
               local_path = os.path.join('./hls_output', item)
-              
               if os.path.isdir(local_path):
                   print(f'📤 Syncing directory: {item}...')
-                  # Targets a specific sub-path, preventing recursive root pagination
                   sync_bucket(local_path, f'hf://buckets/{bucket}/{item}', token=token)
-                  
               elif os.path.isfile(local_path):
                   print(f'📤 Uploading standalone file: {item}...')
-                  # Fast atomic upload for standalone root files
                   batch_bucket_files(bucket, add=[(local_path, item)], token=token)
           "
-          
           echo "✅ Bucket Sync completed successfully."
 
-      - name: Atomic Cloud Catalog Sync
+      - name: Sync Metadata to Cloudflare D1
         if: env.found == 'true' && success()
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_BUCKET: ${{ secrets.HF_BUCKET }}
+          CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
         run: |
-          python -c "
-          import os, json
-          from huggingface_hub import download_bucket_files, batch_bucket_files
-
-          bucket = os.environ.get('HF_BUCKET')
-          token = os.environ.get('HF_TOKEN')
-
-          print('⚡ Fetching Global Catalog from Bucket...')
-          try:
-              # Directly download the JSON object from the bucket without keyword arguments
-              download_bucket_files(bucket, files=[('global_catalog.json', './global_catalog.json')], token=token)
-              with open('./global_catalog.json', 'r') as f:
-                  global_catalog = json.load(f)
-          except Exception as e:
-              print('⚠️ No existing catalog found. Generating a new one.')
-              global_catalog =[]
-
-          try:
-              with open('./session_catalog.json', 'r') as f:
-                  session_catalog = json.load(f)
-          except Exception:
-              session_catalog =[]
-
-          if not session_catalog:
-              print('⚠️ No session catalog found. Skipping merge.')
-              exit(0)
-
-          for session_item in session_catalog:
-              if session_item.get('type') == 'series':
-                  global_catalog =[item for item in global_catalog if not (item.get('type') == 'series' and item.get('title') == session_item['title'])]
-                  global_catalog.append(session_item)
-              elif session_item.get('type') == 'movie':
-                  existing_idx = None
-                  for i, item in enumerate(global_catalog):
-                      if item.get('type') == 'movie' and item.get('title') == session_item['title'] and item.get('year') == session_item['year']:
-                          existing_idx = i
-                          break
-                  if existing_idx is not None:
-                      global_catalog[existing_idx].setdefault('available_resolutions', [])
-                      global_catalog[existing_idx].setdefault('available_variations', [])
-                      if not isinstance(global_catalog[existing_idx].get('hls_manifest_url'), dict):
-                          global_catalog[existing_idx]['hls_manifest_url'] = {}
-                          
-                      for res in session_item.get('available_resolutions',[]):
-                          if res not in global_catalog[existing_idx]['available_resolutions']:
-                              global_catalog[existing_idx]['available_resolutions'].append(res)
-                      global_catalog[existing_idx]['available_resolutions'] = sorted(global_catalog[existing_idx]['available_resolutions'], key=lambda r: int(''.join(filter(str.isdigit, r)) or 0))
-                      
-                      for var in session_item.get('available_variations', []):
-                          if var not in global_catalog[existing_idx]['available_variations']:
-                              global_catalog[existing_idx]['available_variations'].append(var)
-                              
-                      if isinstance(session_item.get('hls_manifest_url'), dict):
-                          global_catalog[existing_idx]['hls_manifest_url'].update(session_item['hls_manifest_url'])
-                      
-                      global_catalog[existing_idx]['date_added'] = session_item['date_added']
-                  else:
-                      global_catalog.append(session_item)
-
-          with open('./latest_global_catalog.json', 'w') as f:
-              json.dump(global_catalog, f, indent=4)
-
-          # Overwrite the catalog file in place using Batch API natively without repo_id mapping errors
-          batch_bucket_files(
-              bucket,
-              add=[('./latest_global_catalog.json', 'global_catalog.json')],
-              token=token
-          )
-          print('✅ Catalog merged and updated instantly in the Bucket.')
-          "
+          if [ -f "d1_payloads.json" ]; then
+            echo "🔍 Validating D1 payload schema..."
+            jq . d1_payloads.json > /dev/null
+            
+            echo "🚀 Sending payload array to Cloudflare Edge..."
+            HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "Content-Type: application/json" -d @d1_payloads.json "$CF_WORKER_URL/api/ingest")
+            
+            HTTP_STATUS=$(echo "$HTTP_RESPONSE" | tail -n1)
+            BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+            
+            if [ "$HTTP_STATUS" -ge 400 ]; then
+              echo "❌ D1 Ingestion failed! Status: $HTTP_STATUS"
+              echo "Detail: $BODY"
+              exit 1
+            fi
+            
+            echo "✅ D1 Database Sync completed successfully."
+          else
+            echo "⚠️ No d1_payloads.json found to sync."
+          fi
 
       - name: Report Success to Discord
         if: env.found == 'true' && success()

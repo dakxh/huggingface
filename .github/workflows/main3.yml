@@ -500,8 +500,8 @@ jobs:
                   
                   AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
                   
-                  if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "
-                  else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "; fi
+                  if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=5.1,aresample=${TARGET_SR}:resampler=soxr,loudnorm=I=-14:TP=-1.5:LRA=11,apad "
+                  else AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,aresample=${TARGET_SR}:resampler=soxr,loudnorm=I=-16:TP=-1.5:LRA=11,apad "; fi
                   AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
                   
                   DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
@@ -543,8 +543,8 @@ jobs:
               
               AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
               
-              if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "
-              else AUDIO_ENCODING+=" -c:a:$A_IDX aac -aac_coder fast -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "; fi
+              if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=5.1,aresample=${TARGET_SR}:resampler=soxr,loudnorm=I=-14:TP=-1.5:LRA=11,apad "
+              else AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,aresample=${TARGET_SR}:resampler=soxr,loudnorm=I=-16:TP=-1.5:LRA=11,apad "; fi
               AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
             fi
           fi

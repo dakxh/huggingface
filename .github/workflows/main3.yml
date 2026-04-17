@@ -452,7 +452,7 @@ jobs:
           AUDIO_ENCODING=""
           A_IDX=0; AUDIO_SED_CMDS=""
           
-          LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ko|kor|korean)([^a-z]|$)"
+          LANG_REGEX="(^|[^a-z])(en|eng|english)([^a-z]|$)"
           AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean)([^a-z]|$)"
           DETECTED_AUDIO=""; DETECTED_SUBS=""; DETECTED_PGS=""
           
@@ -655,6 +655,10 @@ jobs:
                       SUB_LANG="Unknown"
                       case "${lang,,}" in
                         en|eng|english) SUB_LANG="English" ;;
+                        hi|hin|hindi) SUB_LANG="Hindi" ;;
+                        te|tel|telugu) SUB_LANG="Telugu" ;;
+                        ja|jap|jpn|japan|japanese) SUB_LANG="Japanese" ;;
+                        ko|kor|korean) SUB_LANG="Korean" ;;
                         *) [ -n "$lang" ] && SUB_LANG="$(echo "$lang" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')" ;;
                       esac
 

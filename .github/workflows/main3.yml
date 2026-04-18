@@ -23,8 +23,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp imagemagick
-          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp
+          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth Pillow
 
       - name: Acknowledge Payload
         id: payload_ack
@@ -341,6 +341,7 @@ jobs:
 
           cat << 'EOF' > generate_bdn.py
           import os, sys, re
+          from PIL import Image
 
           target_dir = sys.argv[1]
           fps_raw = os.environ.get('VID_FPS_RAW', '24000/1001')
@@ -371,36 +372,58 @@ jobs:
                       match = re.search(r'pts_time:\s*([\d\.]+)', line)
                       if match: frames.append(float(match.group(1)))
                       
-          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+          xml_lines = [
+              '<?xml version="1.0" encoding="utf-8"?>', 
+              '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">',
+              f'  <Description><Format VideoFormat="{vid_w}x{vid_h}" FrameRate="{fps}"/></Description>',
+              '  <Events>'
+          ]
 
           current_event_start = -1
           current_image = None
+          cx, cy, cw, ch = 0, 0, 0, 0
 
           for i, pts in enumerate(frames):
               img_name = f"subs_{i+1:04d}.webp"
               img_file = os.path.join(target_dir, img_name)
               if not os.path.exists(img_file): continue
               
-              size = os.path.getsize(img_file)
-              is_blank = size < 1024 
-              
+              is_blank = True
+              try:
+                  with Image.open(img_file) as img:
+                      bbox = img.getbbox() # Automatically finds the exact X/Y text bounding box!
+                      if bbox:
+                          x, y, right, lower = bbox
+                          w = right - x
+                          h = lower - y
+                          
+                          # Crop it down to save bandwidth, then overwrite original file
+                          cropped = img.crop(bbox)
+                          cropped.save(img_file, format="WEBP", lossless=True, quality=100, method=3)
+                          
+                          is_blank, nx, ny, nw, nh = False, x, y, w, h
+              except: pass
+
               if not is_blank:
                   if current_event_start != -1:
-                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
-                      xml_lines.append('  </Event>')
+                      xml_lines.append(f'    <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      # Write the EXACT offsets into the XML!
+                      xml_lines.append(f'      <Graphic Width="{cw}" Height="{ch}" X="{cx}" Y="{cy}">{current_image}</Graphic>')
+                      xml_lines.append('    </Event>')
                   current_event_start = pts
                   current_image = img_name
+                  cx, cy, cw, ch = nx, ny, nw, nh
               else:
                   if current_event_start != -1:
-                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
-                      xml_lines.append('  </Event>')
+                      xml_lines.append(f'    <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'      <Graphic Width="{cw}" Height="{ch}" X="{cx}" Y="{cy}">{current_image}</Graphic>')
+                      xml_lines.append('    </Event>')
                       current_event_start = -1
                       current_image = None
-                  os.remove(img_file)
+                  try: os.remove(img_file)
+                  except: pass
                   
-          xml_lines.append('</Events>\n</BDN>')
+          xml_lines.append('  </Events>\n</BDN>')
           with open(os.path.join(target_dir, "subs.xml"), "w") as f: f.write('\n'.join(xml_lines))
           os.remove(log_path)
           EOF
@@ -620,7 +643,7 @@ jobs:
                     PGS_DIR="subs_${index}_${lang:-unknown}"
                     mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                     if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                       export VID_FPS_RAW="${VID_FPS_RAW}"
@@ -629,8 +652,6 @@ jobs:
                       python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
                       
                       if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
-                        echo "✂️ Trimming transparent padding via ImageMagick..."
-                        mogrify -trim "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp
                         DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                         echo "✅ Successfully extracted and cropped Native FFmpeg flattened WebP Sprites!"
                       else
@@ -703,7 +724,7 @@ jobs:
                     PGS_DIR="subs_${index}_unknown"
                     mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                     if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                       export VID_FPS_RAW="${VID_FPS_RAW}"
@@ -712,8 +733,6 @@ jobs:
                       python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
                       
                       if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
-                        echo "✂️ Trimming transparent padding via ImageMagick..."
-                        mogrify -trim "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp
                         DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                         echo "✅ Successfully extracted and cropped Native FFmpeg flattened WebP Sprites!"
                       else

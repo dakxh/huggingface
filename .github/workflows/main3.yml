@@ -261,6 +261,7 @@ jobs:
           hf_bucket = os.environ.get('HF_BUCKET', '')
           safe_target_dir = urllib.parse.quote(target_dir)
           manifest_url = f'https://huggingface.co/buckets/{hf_bucket}/{safe_target_dir}/master.m3u8'
+          thumbnails_url = f'https://huggingface.co/buckets/{hf_bucket}/{safe_target_dir}/thumbnails.vtt'
           tmdb_key = os.environ.get('TMDB_API_KEY')
           
           pgs_overlays = [x.strip() for x in pgs_str.split('|') if x.strip()]
@@ -317,7 +318,8 @@ jobs:
                   "id": f"ep_{media_id_str}_S{season_num:02d}E{episode_num:02d}",
                   "media_id": media_id_str, "season_number": season_num, "episode_number": episode_num,
                   "episode_name": episode_name, "duration": duration_formatted, "date_added": date_added,
-                  "hls_manifest_url": manifest_url, "available_audio": available_audio_json,
+                  "hls_manifest_url": manifest_url, "timeline_thumbnails_url": thumbnails_url,
+                  "available_audio": available_audio_json,
                   "available_subs": available_subs_json, "pgs_overlays": pgs_overlays_json
               }
           else:
@@ -326,6 +328,7 @@ jobs:
                   "id": f"movie_{media_id_str}_{variation_str}",
                   "media_id": media_id_str, "variation_name": variation_str, "quality": resolution_str,
                   "is_imax": is_imax, "is_hdr": is_hdr, "hls_manifest_url": manifest_url,
+                  "timeline_thumbnails_url": thumbnails_url,
                   "available_audio": available_audio_json, "available_subs": available_subs_json, "pgs_overlays": pgs_overlays_json
               }
           
@@ -426,6 +429,65 @@ jobs:
           xml_lines.append('  </Events>\n</BDN>')
           with open(os.path.join(target_dir, "subs.xml"), "w") as f: f.write('\n'.join(xml_lines))
           os.remove(log_path)
+          EOF
+
+          cat << 'EOF' > generate_thumbnails.py
+          import sys, os, subprocess, math
+
+          video_file = sys.argv[1]
+          target_dir = sys.argv[2]
+          vid_w = float(sys.argv[3])
+          vid_h = float(sys.argv[4])
+          duration = float(sys.argv[5])
+
+          # Constants
+          interval = 10
+          cols, rows = 10, 10
+          thumb_w = 160
+          # Calculate height dynamically, forcing an even integer (FFmpeg requirement)
+          thumb_h = int(math.ceil((thumb_w * vid_h) / vid_w / 2.0) * 2) 
+
+          print(f"🎬 Generating {cols}x{rows} Thumbnail Sprites ({thumb_w}x{thumb_h} per thumb)...")
+
+          # Pass 2: Execute FFmpeg memory-tiling. 
+          # fps=1/10 ensures exactly 1 frame per 10s. Lossy WebP quality 75 is perfect for tiny visual previews.
+          ff_cmd = [
+              "ffmpeg", "-v", "error", "-nostdin", "-i", video_file,
+              "-vf", f"fps=1/{interval},scale={thumb_w}:{thumb_h},tile={cols}x{rows}",
+              "-c:v", "libwebp", "-lossless", "0", "-q:v", "75",
+              "-threads", "0",
+              os.path.join(target_dir, "sprite_%d.webp")
+          ]
+          
+          subprocess.run(ff_cmd, check=True)
+
+          # Generate the WebVTT brain map
+          def format_tc(seconds):
+              h = int(seconds // 3600)
+              m = int((seconds % 3600) // 60)
+              s = int(seconds % 60)
+              ms = int((seconds - int(seconds)) * 1000)
+              return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+          total_thumbs = math.ceil(duration / interval)
+          vtt_path = os.path.join(target_dir, "thumbnails.vtt")
+          
+          with open(vtt_path, "w", encoding="utf-8") as f:
+              f.write("WEBVTT\n\n")
+              for i in range(total_thumbs):
+                  start = i * interval
+                  end = min((i + 1) * interval, duration)
+                  
+                  sprite_idx = (i // (cols * rows)) + 1
+                  pos = i % (cols * rows)
+                  
+                  x = (pos % cols) * thumb_w
+                  y = (pos // cols) * thumb_h
+                  
+                  f.write(f"{format_tc(start)} --> {format_tc(end)}\n")
+                  f.write(f"sprite_{sprite_idx}.webp#xywh={x},{y},{thumb_w},{thumb_h}\n\n")
+          
+          print("✅ Thumbnail Sprites and VTT map successfully generated.")
           EOF
 
       - name: Compile Pipeline Worker (Phase 1 - Audio & Routing)
@@ -775,6 +837,11 @@ jobs:
           HF_BASE="https://huggingface.co/buckets/${HF_BUCKET}/${TARGET_DIR}/"
           HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
           find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
+
+          # ================= ADD THIS BLOCK =================
+          echo "📸 Initiating Two-Pass Timeline Sprite Generation..."
+          python generate_thumbnails.py "$VIDEO_FILE" "hls_output/$TARGET_DIR" "$VID_W" "$VID_H" "$VID_DUR"
+          # ==================================================
 
           python metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "${DETECTED_AUDIO:-und}" "${DETECTED_SUBS:-}" "$IS_IMAX" "$IS_HDR" "$VARIATION" "$RESOLUTION" "${DETECTED_PGS:-}"
 

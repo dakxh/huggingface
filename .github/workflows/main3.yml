@@ -318,6 +318,7 @@ jobs:
                   "id": f"ep_{media_id_str}_S{season_num:02d}E{episode_num:02d}",
                   "media_id": media_id_str, "season_number": season_num, "episode_number": episode_num,
                   "episode_name": episode_name, "duration": duration_formatted, "date_added": date_added,
+                  "quality": resolution_str,
                   "hls_manifest_url": manifest_url, "timeline_thumbnails_url": thumbnails_url,
                   "available_audio": available_audio_json,
                   "available_subs": available_subs_json, "pgs_overlays": pgs_overlays_json

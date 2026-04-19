@@ -395,13 +395,12 @@ jobs:
               is_blank = True
               try:
                   with Image.open(img_file) as img:
-                      bbox = img.getbbox() # Automatically finds the exact X/Y text bounding box!
+                      bbox = img.getbbox()
                       if bbox:
                           x, y, right, lower = bbox
                           w = right - x
                           h = lower - y
                           
-                          # Crop it down to save bandwidth, then overwrite original file
                           cropped = img.crop(bbox)
                           cropped.save(img_file, format="WEBP", lossless=True, quality=100, method=3)
                           
@@ -410,20 +409,46 @@ jobs:
 
               if not is_blank:
                   if current_event_start != -1:
-                      xml_lines.append(f'    <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      # Write the EXACT offsets into the XML!
+                      in_tc = secs_to_tc(current_event_start)
+                      out_tc = secs_to_tc(pts)
+                      
+                      # ---> FIX: DETECT 0-DURATION / DUPLICATE FRAMES <---
+                      if in_tc == out_tc:
+                          # The stream pushed 2 identical packets at the same millisecond.
+                          # Throw away the previous physical image file, keep the new one.
+                          if current_image:
+                              try: os.remove(os.path.join(target_dir, current_image))
+                              except: pass
+                          current_image = img_name
+                          cx, cy, cw, ch = nx, ny, nw, nh
+                          continue # Skip writing this broken event to the XML
+                      # ---------------------------------------------------
+
+                      xml_lines.append(f'    <Event InTC="{in_tc}" OutTC="{out_tc}" Forced="False">')
                       xml_lines.append(f'      <Graphic Width="{cw}" Height="{ch}" X="{cx}" Y="{cy}">{current_image}</Graphic>')
                       xml_lines.append('    </Event>')
+                      
                   current_event_start = pts
                   current_image = img_name
                   cx, cy, cw, ch = nx, ny, nw, nh
               else:
                   if current_event_start != -1:
-                      xml_lines.append(f'    <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      xml_lines.append(f'      <Graphic Width="{cw}" Height="{ch}" X="{cx}" Y="{cy}">{current_image}</Graphic>')
-                      xml_lines.append('    </Event>')
+                      in_tc = secs_to_tc(current_event_start)
+                      out_tc = secs_to_tc(pts)
+                      
+                      # ---> FIX: ENSURE NO 0-DURATION EVENTS ON CLEARING <---
+                      if in_tc != out_tc:
+                          xml_lines.append(f'    <Event InTC="{in_tc}" OutTC="{out_tc}" Forced="False">')
+                          xml_lines.append(f'      <Graphic Width="{cw}" Height="{ch}" X="{cx}" Y="{cy}">{current_image}</Graphic>')
+                          xml_lines.append('    </Event>')
+                      else:
+                          if current_image:
+                              try: os.remove(os.path.join(target_dir, current_image))
+                              except: pass
+
                       current_event_start = -1
                       current_image = None
+                      
                   try: os.remove(img_file)
                   except: pass
                   

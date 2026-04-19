@@ -29,6 +29,7 @@ jobs:
       - name: Acknowledge Payload
         id: payload_ack
         run: |
+          # 🧠 Checkpoint 1: The Worker will look for this exact string
           echo "Target acquired: ${{ inputs.target_link }}"
           
           echo "TARGET_LINK=${{ inputs.target_link }}" >> $GITHUB_ENV
@@ -88,6 +89,7 @@ jobs:
                       with open(os.path.join("workspace", fname), 'wb') as f:
                           for chunk in r.iter_content(chunk_size=1024*1024*10):
                               if chunk: f.write(chunk)
+                  # 🧠 Checkpoint 2: The Worker will look for this exact string
                   print(f"✅ Download complete: {fname}")
               except Exception as e:
                   print(f"\n❌ Download Failed: {e}")
@@ -153,6 +155,7 @@ jobs:
               last_year_match = year_matches[-1]
               raw_prefix = filename[:last_year_match.start()]
               
+              # ---> FIX: Sever TV Show tags (S01E01, S02, etc.) before treating the string as a title
               raw_prefix = re.split(r'(?i)[ _.-]+(?:S\d{1,2}E\d{1,4}|S\d{1,2}|Season\s?\d{1,2}|E\d{1,4})\b', raw_prefix)[0]
               
               regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
@@ -205,6 +208,7 @@ jobs:
           title = re.sub(r'[^a-zA-Z0-9.\-]', '', title)
                   
           if vid_type == 'episode' or e:
+              # ---> FIX 1: THE STRICT NULL CHECK (Rescues Falsy Zeros for S00 Specials) <---
               s_val = int(s[0] if isinstance(s, list) else s) if s is not None and str(s).strip() != "" else 1
               e_val = int(e[0] if isinstance(e, list) else e) if e is not None and str(e).strip() != "" else 1
               base_dir = f"{title}.{year}" if year else title
@@ -270,6 +274,7 @@ jobs:
 
           payload = {"media": {"type": "series" if sub_dir else "movie", "title": title, "year": year, "rating": 0.0, "poster_url": "", "backdrop_url": ""}}
           
+          # Fetch TMDB Data and set primary Media ID
           media_id_str = re.sub(r'[^a-z0-9]', '', f"{title.lower()}{year}")
           if tmdb_key and title != 'Unknown Title':
               search_type = 'tv' if sub_dir else 'movie'
@@ -290,6 +295,7 @@ jobs:
           payload["media"]["id"] = media_id_str
 
           if sub_dir:
+              # ====== EPISODE METADATA ======
               s_val, e_val = g.get('season'), g.get('episode')
               if not s_val:
                   s_match = re.search(r'[Ss](\d{1,2})[Ee]\d', filename)
@@ -318,6 +324,7 @@ jobs:
                   "available_subs": available_subs_json, "pgs_overlays": pgs_overlays_json
               }
           else:
+              # ====== MOVIE METADATA ======
               payload["movie_source"] = {
                   "id": f"movie_{media_id_str}_{variation_str}",
                   "media_id": media_id_str, "variation_name": variation_str, "quality": resolution_str,
@@ -326,6 +333,7 @@ jobs:
                   "available_audio": available_audio_json, "available_subs": available_subs_json, "pgs_overlays": pgs_overlays_json
               }
           
+          # Safely append to the temporary D1 payload array
           payloads_path = 'd1_payloads.json'
           try:
               with open(payloads_path, 'r') as f: payloads = json.load(f)
@@ -350,15 +358,10 @@ jobs:
           except:
               fps = 23.976
 
-          # 🎯 FIX: Intelligently fallback resolution bounding and read the explicitly grabbed container start offsets
           vid_w = os.environ.get('VID_W', '1920')
           vid_h = os.environ.get('VID_H', '1080')
-          sub_w = os.environ.get('SUB_W', vid_w)
-          sub_h = os.environ.get('SUB_H', vid_h)
-          v_start = float(os.environ.get('V_START', '0.0'))
 
           def secs_to_tc(secs):
-              secs = max(0, secs)
               h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
               return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
               
@@ -371,16 +374,12 @@ jobs:
               for line in f:
                   if "pts_time:" in line:
                       match = re.search(r'pts_time:\s*([\d\.]+)', line)
-                      if match:
-                          # 🎯 FIX: Absolute raw container PTS subtracting raw container offset guarantees bullet-proof sync index to player zero!
-                          pts = float(match.group(1)) - v_start
-                          if pts < 0: pts = 0.0
-                          frames.append(pts)
+                      if match: frames.append(float(match.group(1)))
                       
           xml_lines = [
               '<?xml version="1.0" encoding="utf-8"?>', 
               '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">',
-              f'  <Description><Format VideoFormat="{sub_w}x{sub_h}" FrameRate="{fps}"/></Description>',
+              f'  <Description><Format VideoFormat="{vid_w}x{vid_h}" FrameRate="{fps}"/></Description>',
               '  <Events>'
           ]
 
@@ -396,12 +395,13 @@ jobs:
               is_blank = True
               try:
                   with Image.open(img_file) as img:
-                      bbox = img.getbbox() 
+                      bbox = img.getbbox() # Automatically finds the exact X/Y text bounding box!
                       if bbox:
                           x, y, right, lower = bbox
                           w = right - x
                           h = lower - y
                           
+                          # Crop it down to save bandwidth, then overwrite original file
                           cropped = img.crop(bbox)
                           cropped.save(img_file, format="WEBP", lossless=True, quality=100, method=3)
                           
@@ -411,6 +411,7 @@ jobs:
               if not is_blank:
                   if current_event_start != -1:
                       xml_lines.append(f'    <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      # Write the EXACT offsets into the XML!
                       xml_lines.append(f'      <Graphic Width="{cw}" Height="{ch}" X="{cx}" Y="{cy}">{current_image}</Graphic>')
                       xml_lines.append('    </Event>')
                   current_event_start = pts
@@ -440,13 +441,17 @@ jobs:
           vid_h = float(sys.argv[4])
           duration = float(sys.argv[5])
 
+          # Constants
           interval = 10
           cols, rows = 10, 10
           thumb_w = 160
+          # Calculate height dynamically, forcing an even integer (FFmpeg requirement)
           thumb_h = int(math.ceil((thumb_w * vid_h) / vid_w / 2.0) * 2) 
 
           print(f"🎬 Generating {cols}x{rows} Thumbnail Sprites ({thumb_w}x{thumb_h} per thumb)...")
 
+          # Pass 2: Execute FFmpeg memory-tiling. 
+          # fps=1/10 ensures exactly 1 frame per 10s. Lossy WebP quality 75 is perfect for tiny visual previews.
           ff_cmd = [
               "ffmpeg", "-v", "error", "-nostdin", "-i", video_file,
               "-vf", f"fps=1/{interval},scale={thumb_w}:{thumb_h},tile={cols}x{rows}",
@@ -457,6 +462,7 @@ jobs:
           
           subprocess.run(ff_cmd, check=True)
 
+          # Generate the WebVTT brain map
           def format_tc(seconds):
               h = int(seconds // 3600)
               m = int((seconds % 3600) // 60)
@@ -647,17 +653,10 @@ jobs:
             V_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
           fi
           
-          # 🎯 FIX 1: EXPLICITLY CAPTURE NATIVE CONTAINER START TIME FOR ACCURATE SUBTITLE SYNC 
-          V_START=$(ffprobe -v error -select_streams v:0 -show_entries stream=start_time -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | head -n 1)
-          if [[ -z "$V_START" || "$V_START" == "N/A" ]]; then
-            V_START=$(ffprobe -v error -show_entries format=start_time -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null | head -n 1)
-          fi
-          [[ -z "$V_START" || "$V_START" == "N/A" ]] && V_START="0.0"
-
           # ---> FIX 2: LOG SILENCING <---
-          if ! ffmpeg -nostdin -v error -stats -copyts -fflags +genpts -i "$VIDEO_FILE" \
+          if ! ffmpeg -nostdin -v error -stats -fflags +genpts -i "$VIDEO_FILE" \
             $AUDIO_MAPS -c:v copy $AUDIO_ENCODING $V_TAG \
-            -muxdelay 0 -muxpreload 0 \
+            -avoid_negative_ts make_zero -muxdelay 0 -muxpreload 0 \
             -max_muxing_queue_size 9999 -f hls -hls_segment_type mpegts \
             -hls_segment_filename "hls_output/$TARGET_DIR/stream_%v_%04d.ts" \
             -var_stream_map "$VAR_STREAM_MAP" -master_pl_name master.m3u8 -hls_time 10 -hls_list_size 0 \
@@ -687,7 +686,10 @@ jobs:
           MANIFEST_RESOLUTION=$(echo "$MANIFEST_RESOLUTION" | head -n 1 | grep -oE '^[0-9]+x[0-9]+' || echo "1920x1080")
           [ -z "$MANIFEST_RESOLUTION" ] && MANIFEST_RESOLUTION="1920x1080"
           
-          VIDEO_MANIFEST_INJECTION=$(printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION")
+          if [[ "$VIDEO_CODEC" == "hevc" ]]; then VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
+          else VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""; fi
+          
+          VIDEO_MANIFEST_INJECTION=$(printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION" "$VIDEO_TAG_STR")
           mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
           
           HAS_SUBS="false"; echo "" >> "hls_output/$TARGET_DIR/master.m3u8"
@@ -704,21 +706,19 @@ jobs:
                   PGS_DIR="subs_${index}_${lang:-unknown}"
                   mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
+                  # FIX 2 & 3: Get native Subtitle Canvas and Container Offset
                   SUB_RES=$(ffprobe -v error -select_streams $index -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null | head -n 1)
                   SUB_W=$(echo "$SUB_RES" | cut -d'x' -f1); SUB_H=$(echo "$SUB_RES" | cut -d'x' -f2)
                   [ -z "$SUB_W" ] && SUB_W="$VID_W"
                   [ -z "$SUB_H" ] && SUB_H="$VID_H"
 
-                  # 🎯 FIX 2: ADDED `-copyts` FLAG TO AVOID NORMALIZING SUBTITLE BY FIRST LINE
-                  ffmpeg -nostdin -y -fix_sub_duration -copyts -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                  # Note: -fix_sub_duration is kept to prevent VobSub flashing
+                  ffmpeg -nostdin -y -fix_sub_duration -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                   if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                     export VID_FPS_RAW="${VID_FPS_RAW}"
-                    export VID_W="${VID_W}"
-                    export VID_H="${VID_H}"
                     export SUB_W="${SUB_W}"
                     export SUB_H="${SUB_H}"
-                    export V_START="${V_START}"
                     python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
     
                     if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
@@ -791,21 +791,19 @@ jobs:
                   PGS_DIR="subs_${index}_${lang:-unknown}"
                   mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
+                  # FIX 2 & 3: Get native Subtitle Canvas and Container Offset
                   SUB_RES=$(ffprobe -v error -select_streams $index -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null | head -n 1)
                   SUB_W=$(echo "$SUB_RES" | cut -d'x' -f1); SUB_H=$(echo "$SUB_RES" | cut -d'x' -f2)
                   [ -z "$SUB_W" ] && SUB_W="$VID_W"
                   [ -z "$SUB_H" ] && SUB_H="$VID_H"
 
-                  # 🎯 FIX 3: ADDED `-copyts` FLAG FOR THE SCANNING FALLBACK LOOP AS WELL
-                  ffmpeg -nostdin -y -fix_sub_duration -copyts -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                  # Note: -fix_sub_duration is kept to prevent VobSub flashing
+                  ffmpeg -nostdin -y -fix_sub_duration -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                   if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                     export VID_FPS_RAW="${VID_FPS_RAW}"
-                    export VID_W="${VID_W}"
-                    export VID_H="${VID_H}"
                     export SUB_W="${SUB_W}"
                     export SUB_H="${SUB_H}"
-                    export V_START="${V_START}"
                     python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
     
                     if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
@@ -848,11 +846,14 @@ jobs:
           HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
           find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
 
+          # ================= ADD THIS BLOCK =================
           echo "📸 Initiating Two-Pass Timeline Sprite Generation..."
           python generate_thumbnails.py "$VIDEO_FILE" "hls_output/$TARGET_DIR" "$VID_W" "$VID_H" "$VID_DUR"
+          # ==================================================
 
           python metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "${DETECTED_AUDIO:-und}" "${DETECTED_SUBS:-}" "$IS_IMAX" "$IS_HDR" "$VARIATION" "$RESOLUTION" "${DETECTED_PGS:-}"
 
+          # 🔥 NEW: Delete the massive original source file to free up runner disk space
           echo "🗑️ Discarding original file to reclaim disk space: $VIDEO_FILE"
           rm -f "$VIDEO_FILE"
           EOF

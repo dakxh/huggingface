@@ -360,6 +360,7 @@ jobs:
 
           vid_w = os.environ.get('VID_W', '1920')
           vid_h = os.environ.get('VID_H', '1080')
+          offset = float(os.environ.get('VID_START_TIME', '0.0'))
 
           def secs_to_tc(secs):
               h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)
@@ -374,7 +375,8 @@ jobs:
               for line in f:
                   if "pts_time:" in line:
                       match = re.search(r'pts_time:\s*([\d\.]+)', line)
-                      if match: frames.append(float(match.group(1)))
+                      # Apply offset sync here!
+                      if match: frames.append(max(0.0, float(match.group(1)) - offset))
                       
           xml_lines = [
               '<?xml version="1.0" encoding="utf-8"?>', 
@@ -711,14 +713,18 @@ jobs:
                   SUB_W=$(echo "$SUB_RES" | cut -d'x' -f1); SUB_H=$(echo "$SUB_RES" | cut -d'x' -f2)
                   [ -z "$SUB_W" ] && SUB_W="$VID_W"
                   [ -z "$SUB_H" ] && SUB_H="$VID_H"
+  
+                  START_TIME=$(ffprobe -v error -show_entries format=start_time -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                  [ -z "$START_TIME" ] || [ "$START_TIME" == "N/A" ] && START_TIME="0.0"
 
-                  # Note: -fix_sub_duration is kept to prevent VobSub flashing
+                  # FIX 1: Add -fix_sub_duration input flag before -i
                   ffmpeg -nostdin -y -fix_sub_duration -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                   if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                     export VID_FPS_RAW="${VID_FPS_RAW}"
                     export SUB_W="${SUB_W}"
                     export SUB_H="${SUB_H}"
+                    export VID_START_TIME="${START_TIME}"
                     python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
     
                     if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
@@ -796,14 +802,18 @@ jobs:
                   SUB_W=$(echo "$SUB_RES" | cut -d'x' -f1); SUB_H=$(echo "$SUB_RES" | cut -d'x' -f2)
                   [ -z "$SUB_W" ] && SUB_W="$VID_W"
                   [ -z "$SUB_H" ] && SUB_H="$VID_H"
+  
+                  START_TIME=$(ffprobe -v error -show_entries format=start_time -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                  [ -z "$START_TIME" ] || [ "$START_TIME" == "N/A" ] && START_TIME="0.0"
 
-                  # Note: -fix_sub_duration is kept to prevent VobSub flashing
+                  # FIX 1: Add -fix_sub_duration input flag before -i
                   ffmpeg -nostdin -y -fix_sub_duration -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                   if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                     export VID_FPS_RAW="${VID_FPS_RAW}"
                     export SUB_W="${SUB_W}"
                     export SUB_H="${SUB_H}"
+                    export VID_START_TIME="${START_TIME}"
                     python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
     
                     if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then

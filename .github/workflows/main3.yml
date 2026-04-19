@@ -23,8 +23,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp imagemagick
-          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip webp
+          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth Pillow
 
       - name: Acknowledge Payload
         id: payload_ack
@@ -261,6 +261,7 @@ jobs:
           hf_bucket = os.environ.get('HF_BUCKET', '')
           safe_target_dir = urllib.parse.quote(target_dir)
           manifest_url = f'https://huggingface.co/buckets/{hf_bucket}/{safe_target_dir}/master.m3u8'
+          thumbnails_url = f'https://huggingface.co/buckets/{hf_bucket}/{safe_target_dir}/thumbnails.vtt'
           tmdb_key = os.environ.get('TMDB_API_KEY')
           
           pgs_overlays = [x.strip() for x in pgs_str.split('|') if x.strip()]
@@ -317,7 +318,9 @@ jobs:
                   "id": f"ep_{media_id_str}_S{season_num:02d}E{episode_num:02d}",
                   "media_id": media_id_str, "season_number": season_num, "episode_number": episode_num,
                   "episode_name": episode_name, "duration": duration_formatted, "date_added": date_added,
-                  "hls_manifest_url": manifest_url, "available_audio": available_audio_json,
+                  "quality": resolution_str,
+                  "hls_manifest_url": manifest_url, "timeline_thumbnails_url": thumbnails_url,
+                  "available_audio": available_audio_json,
                   "available_subs": available_subs_json, "pgs_overlays": pgs_overlays_json
               }
           else:
@@ -326,6 +329,7 @@ jobs:
                   "id": f"movie_{media_id_str}_{variation_str}",
                   "media_id": media_id_str, "variation_name": variation_str, "quality": resolution_str,
                   "is_imax": is_imax, "is_hdr": is_hdr, "hls_manifest_url": manifest_url,
+                  "timeline_thumbnails_url": thumbnails_url,
                   "available_audio": available_audio_json, "available_subs": available_subs_json, "pgs_overlays": pgs_overlays_json
               }
           
@@ -341,6 +345,7 @@ jobs:
 
           cat << 'EOF' > generate_bdn.py
           import os, sys, re
+          from PIL import Image
 
           target_dir = sys.argv[1]
           fps_raw = os.environ.get('VID_FPS_RAW', '24000/1001')
@@ -371,38 +376,119 @@ jobs:
                       match = re.search(r'pts_time:\s*([\d\.]+)', line)
                       if match: frames.append(float(match.group(1)))
                       
-          xml_lines = ['<?xml version="1.0" encoding="utf-8"?>', '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">', '<Events>']
+          xml_lines = [
+              '<?xml version="1.0" encoding="utf-8"?>', 
+              '<BDN Version="0.9.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="BD-03-006-0093b BDN File Format.xsd">',
+              f'  <Description><Format VideoFormat="{vid_w}x{vid_h}" FrameRate="{fps}"/></Description>',
+              '  <Events>'
+          ]
 
           current_event_start = -1
           current_image = None
+          cx, cy, cw, ch = 0, 0, 0, 0
 
           for i, pts in enumerate(frames):
               img_name = f"subs_{i+1:04d}.webp"
               img_file = os.path.join(target_dir, img_name)
               if not os.path.exists(img_file): continue
               
-              size = os.path.getsize(img_file)
-              is_blank = size < 1024 
-              
+              is_blank = True
+              try:
+                  with Image.open(img_file) as img:
+                      bbox = img.getbbox() # Automatically finds the exact X/Y text bounding box!
+                      if bbox:
+                          x, y, right, lower = bbox
+                          w = right - x
+                          h = lower - y
+                          
+                          # Crop it down to save bandwidth, then overwrite original file
+                          cropped = img.crop(bbox)
+                          cropped.save(img_file, format="WEBP", lossless=True, quality=100, method=3)
+                          
+                          is_blank, nx, ny, nw, nh = False, x, y, w, h
+              except: pass
+
               if not is_blank:
                   if current_event_start != -1:
-                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
-                      xml_lines.append('  </Event>')
+                      xml_lines.append(f'    <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      # Write the EXACT offsets into the XML!
+                      xml_lines.append(f'      <Graphic Width="{cw}" Height="{ch}" X="{cx}" Y="{cy}">{current_image}</Graphic>')
+                      xml_lines.append('    </Event>')
                   current_event_start = pts
                   current_image = img_name
+                  cx, cy, cw, ch = nx, ny, nw, nh
               else:
                   if current_event_start != -1:
-                      xml_lines.append(f'  <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
-                      xml_lines.append(f'    <Graphic Width="{vid_w}" Height="{vid_h}" X="0" Y="0">{current_image}</Graphic>')
-                      xml_lines.append('  </Event>')
+                      xml_lines.append(f'    <Event InTC="{secs_to_tc(current_event_start)}" OutTC="{secs_to_tc(pts)}" Forced="False">')
+                      xml_lines.append(f'      <Graphic Width="{cw}" Height="{ch}" X="{cx}" Y="{cy}">{current_image}</Graphic>')
+                      xml_lines.append('    </Event>')
                       current_event_start = -1
                       current_image = None
-                  os.remove(img_file)
+                  try: os.remove(img_file)
+                  except: pass
                   
-          xml_lines.append('</Events>\n</BDN>')
+          xml_lines.append('  </Events>\n</BDN>')
           with open(os.path.join(target_dir, "subs.xml"), "w") as f: f.write('\n'.join(xml_lines))
           os.remove(log_path)
+          EOF
+
+          cat << 'EOF' > generate_thumbnails.py
+          import sys, os, subprocess, math
+
+          video_file = sys.argv[1]
+          target_dir = sys.argv[2]
+          vid_w = float(sys.argv[3])
+          vid_h = float(sys.argv[4])
+          duration = float(sys.argv[5])
+
+          # Constants
+          interval = 10
+          cols, rows = 10, 10
+          thumb_w = 160
+          # Calculate height dynamically, forcing an even integer (FFmpeg requirement)
+          thumb_h = int(math.ceil((thumb_w * vid_h) / vid_w / 2.0) * 2) 
+
+          print(f"🎬 Generating {cols}x{rows} Thumbnail Sprites ({thumb_w}x{thumb_h} per thumb)...")
+
+          # Pass 2: Execute FFmpeg memory-tiling. 
+          # fps=1/10 ensures exactly 1 frame per 10s. Lossy WebP quality 75 is perfect for tiny visual previews.
+          ff_cmd = [
+              "ffmpeg", "-v", "error", "-nostdin", "-i", video_file,
+              "-vf", f"fps=1/{interval},scale={thumb_w}:{thumb_h},tile={cols}x{rows}",
+              "-c:v", "libwebp", "-lossless", "0", "-q:v", "75",
+              "-threads", "0",
+              os.path.join(target_dir, "sprite_%d.webp")
+          ]
+          
+          subprocess.run(ff_cmd, check=True)
+
+          # Generate the WebVTT brain map
+          def format_tc(seconds):
+              h = int(seconds // 3600)
+              m = int((seconds % 3600) // 60)
+              s = int(seconds % 60)
+              ms = int((seconds - int(seconds)) * 1000)
+              return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+          total_thumbs = math.ceil(duration / interval)
+          vtt_path = os.path.join(target_dir, "thumbnails.vtt")
+          
+          with open(vtt_path, "w", encoding="utf-8") as f:
+              f.write("WEBVTT\n\n")
+              for i in range(total_thumbs):
+                  start = i * interval
+                  end = min((i + 1) * interval, duration)
+                  
+                  sprite_idx = (i // (cols * rows)) + 1
+                  pos = i % (cols * rows)
+                  
+                  x = (pos % cols) * thumb_w
+                  y = (pos // cols) * thumb_h
+                  
+                  f.write(f"{format_tc(start)} --> {format_tc(end)}\n")
+                  f.write(f"sprite_{sprite_idx}.webp#xywh={x},{y},{thumb_w},{thumb_h}\n\n")
+          
+          print("✅ Thumbnail Sprites and VTT map successfully generated.")
           EOF
 
       - name: Compile Pipeline Worker (Phase 1 - Audio & Routing)
@@ -500,8 +586,8 @@ jobs:
                   
                   AUDIO_MAPS+=" -map 0:$index"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
                   
-                  if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr,apad "
-                  else AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr,apad "; fi
+                  if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "
+                  else AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "; fi
                   AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
                   
                   DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
@@ -543,8 +629,8 @@ jobs:
               
               AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
               
-              if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr,apad "
-              else AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr,apad "; fi
+              if [[ "$IS_STEREO" -eq 0 ]]; then AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=5.1,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "
+              else AUDIO_ENCODING+=" -c:a:$A_IDX aac -b:a:$A_IDX ${TARGET_BITRATE_K} -filter:a:$A_IDX apad,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=${TARGET_SR}:resampler=soxr "; fi
               AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"P_${DISPLAY_LANG} - ${TARGET_BITRATE_DISP}\"/g; "; A_IDX=$((A_IDX + 1))
             fi
           fi
@@ -620,7 +706,7 @@ jobs:
                     PGS_DIR="subs_${index}_${lang:-unknown}"
                     mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                     if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                       export VID_FPS_RAW="${VID_FPS_RAW}"
@@ -629,8 +715,6 @@ jobs:
                       python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
                       
                       if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
-                        echo "✂️ Trimming transparent padding via ImageMagick..."
-                        mogrify -trim "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp
                         DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                         echo "✅ Successfully extracted and cropped Native FFmpeg flattened WebP Sprites!"
                       else
@@ -703,7 +787,7 @@ jobs:
                     PGS_DIR="subs_${index}_unknown"
                     mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]scale=${VID_W}:-1,crop=${VID_W}:${VID_H},format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
 
                     if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
                       export VID_FPS_RAW="${VID_FPS_RAW}"
@@ -712,8 +796,6 @@ jobs:
                       python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
                       
                       if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
-                        echo "✂️ Trimming transparent padding via ImageMagick..."
-                        mogrify -trim "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp
                         DETECTED_PGS+="${PGS_DIR}/subs.xml|"
                         echo "✅ Successfully extracted and cropped Native FFmpeg flattened WebP Sprites!"
                       else
@@ -756,6 +838,11 @@ jobs:
           HF_BASE="https://huggingface.co/buckets/${HF_BUCKET}/${TARGET_DIR}/"
           HF_BASE=$(python -c "import urllib.parse; print(urllib.parse.quote('$HF_BASE', safe=':/'))")
           find "hls_output/$TARGET_DIR" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" -e "s|URI=\"|URI=\"${HF_BASE}|g" {} +
+
+          # ================= ADD THIS BLOCK =================
+          echo "📸 Initiating Two-Pass Timeline Sprite Generation..."
+          python generate_thumbnails.py "$VIDEO_FILE" "hls_output/$TARGET_DIR" "$VID_W" "$VID_H" "$VID_DUR"
+          # ==================================================
 
           python metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "${DETECTED_AUDIO:-und}" "${DETECTED_SUBS:-}" "$IS_IMAX" "$IS_HDR" "$VARIATION" "$RESOLUTION" "${DETECTED_PGS:-}"
 

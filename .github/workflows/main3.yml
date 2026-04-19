@@ -374,7 +374,8 @@ jobs:
               for line in f:
                   if "pts_time:" in line:
                       match = re.search(r'pts_time:\s*([\d\.]+)', line)
-                      if match: frames.append(float(match.group(1)))
+                      # Apply offset sync here!
+                      if match: frames.append(max(0.0, float(match.group(1)) - offset))
                       
           xml_lines = [
               '<?xml version="1.0" encoding="utf-8"?>', 
@@ -702,32 +703,40 @@ jobs:
                 SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
                 if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle|dvd_subtitle)$ ]]; then
                   if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" || "$SUB_CODEC" == "dvd_subtitle" ]]; then
-                    echo "🔍 Detected Graphical Subtitle (${lang:-unknown}). Dynamically Scaling to ${VID_W}x${VID_H} at ${VID_FPS_RAW} FPS..."
-                    PGS_DIR="subs_${index}_${lang:-unknown}"
-                    mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
+                  echo "🔍 Detected Graphical Subtitle (${lang:-unknown}). Synchronizing and Extracting..."
+                  PGS_DIR="subs_${index}_${lang:-unknown}"
+                  mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                  # FIX 2 & 3: Get native Subtitle Canvas and Container Offset
+                  SUB_RES=$(ffprobe -v error -select_streams $index -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null | head -n 1)
+                  SUB_W=$(echo "$SUB_RES" | cut -d'x' -f1); SUB_H=$(echo "$SUB_RES" | cut -d'x' -f2)
+                  [ -z "$SUB_W" ] && SUB_W="$VID_W"
+                  [ -z "$SUB_H" ] && SUB_H="$VID_H"
+  
+                  START_TIME=$(ffprobe -v error -show_entries format=start_time -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                  [ -z "$START_TIME" ] || [ "$START_TIME" == "N/A" ] && START_TIME="0.0"
 
-                    if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
-                      export VID_FPS_RAW="${VID_FPS_RAW}"
-                      export VID_W="${VID_W}"
-                      export VID_H="${VID_H}"
-                      python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
-                      
-                      if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
-                        DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                        echo "✅ Successfully extracted and cropped Native FFmpeg flattened WebP Sprites!"
-                      else
-                        echo "❌ FFmpeg extraction produced empty XML (no visible events)."
-                        rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
-                      fi
+                  # FIX 1: Add -fix_sub_duration input flag before -i
+                  ffmpeg -nostdin -y -fix_sub_duration -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+
+                  if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
+                    export VID_FPS_RAW="${VID_FPS_RAW}"
+                    export SUB_W="${SUB_W}"
+                    export SUB_H="${SUB_H}"
+                    export VID_START_TIME="${START_TIME}"
+                    python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
+    
+                    if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
+                      DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                      echo "✅ Successfully extracted Image Sequence!"
                     else
-                      echo "❌ FFmpeg failed to extract the graphical stream to images. Error Log:"
-                      cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
                       rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                     fi
-                    continue
+                  else
+                    rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                   fi
+                  continue
+                fi
                 
                   VTT_BASENAME="subs_${index}_${lang:-und}.vtt"; M3U8_BASENAME="subs_${index}_${lang:-und}.m3u8"
                   VTT_FILE="hls_output/$TARGET_DIR/$VTT_BASENAME"; M3U8_FILE="hls_output/$TARGET_DIR/$M3U8_BASENAME"
@@ -783,33 +792,40 @@ jobs:
                 SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
                 if [[ "$SUB_CODEC" =~ ^(subrip|ass|webvtt|mov_text|tx3g|hdmv_pgs_subtitle|dvd_subtitle)$ ]]; then
                   if [[ "$SUB_CODEC" == "hdmv_pgs_subtitle" || "$SUB_CODEC" == "dvd_subtitle" ]]; then
-                    echo "🔍 Extracting untagged Graphical Subtitle via Native FFmpeg..."
-                    PGS_DIR="subs_${index}_unknown"
-                    mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
+                  echo "🔍 Detected Graphical Subtitle (${lang:-unknown}). Synchronizing and Extracting..."
+                  PGS_DIR="subs_${index}_${lang:-unknown}"
+                  mkdir -p "hls_output/$TARGET_DIR/$PGS_DIR"
 
-                    ffmpeg -nostdin -y -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+                  # FIX 2 & 3: Get native Subtitle Canvas and Container Offset
+                  SUB_RES=$(ffprobe -v error -select_streams $index -show_entries stream=width,height -of csv=s=x:p=0 "$VIDEO_FILE" 2>/dev/null | head -n 1)
+                  SUB_W=$(echo "$SUB_RES" | cut -d'x' -f1); SUB_H=$(echo "$SUB_RES" | cut -d'x' -f2)
+                  [ -z "$SUB_W" ] && SUB_W="$VID_W"
+                  [ -z "$SUB_H" ] && SUB_H="$VID_H"
+  
+                  START_TIME=$(ffprobe -v error -show_entries format=start_time -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" 2>/dev/null)
+                  [ -z "$START_TIME" ] || [ "$START_TIME" == "N/A" ] && START_TIME="0.0"
 
-                    if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
-                      export VID_FPS_RAW="${VID_FPS_RAW}"
-                      export VID_W="${VID_W}"
-                      export VID_H="${VID_H}"
-                      python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
-                      
-                      if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
-                        DETECTED_PGS+="${PGS_DIR}/subs.xml|"
-                        echo "✅ Successfully extracted and cropped Native FFmpeg flattened WebP Sprites!"
-                      else
-                        echo "❌ FFmpeg extraction produced empty XML (no visible events)."
-                        rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
-                      fi
-                      break
+                  # FIX 1: Add -fix_sub_duration input flag before -i
+                  ffmpeg -nostdin -y -fix_sub_duration -probesize 100M -analyzeduration 100M -i "$VIDEO_FILE" -filter_complex "[0:$index]format=rgba,showinfo[v]" -map "[v]" -fps_mode vfr -c:v libwebp -lossless 1 -compression_level 3 -threads 0 "hls_output/$TARGET_DIR/$PGS_DIR/subs_%04d.webp" > "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" 2>&1 || true
+
+                  if ls "hls_output/$TARGET_DIR/$PGS_DIR"/subs_*.webp 1> /dev/null 2>&1; then
+                    export VID_FPS_RAW="${VID_FPS_RAW}"
+                    export SUB_W="${SUB_W}"
+                    export SUB_H="${SUB_H}"
+                    export VID_START_TIME="${START_TIME}"
+                    python generate_bdn.py "hls_output/$TARGET_DIR/$PGS_DIR"
+    
+                    if grep -q "<Event" "hls_output/$TARGET_DIR/$PGS_DIR/subs.xml"; then
+                      DETECTED_PGS+="${PGS_DIR}/subs.xml|"
+                      echo "✅ Successfully extracted Image Sequence!"
                     else
-                      echo "❌ FFmpeg failed to extract the untagged graphical stream to images. Error Log:"
-                      cat "hls_output/$TARGET_DIR/$PGS_DIR/pgs_times.log" | tail -n 50
                       rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                     fi
-                    continue
+                  else
+                    rm -rf "hls_output/$TARGET_DIR/$PGS_DIR"
                   fi
+                  continue
+                fi
 
                   TEMP_VTT="hls_output/$TARGET_DIR/temp_${index}.vtt"
                   if ffmpeg -nostdin -y -i "$VIDEO_FILE" -map "0:$index" "$TEMP_VTT" >/dev/null 2>&1; then

@@ -686,10 +686,7 @@ jobs:
           MANIFEST_RESOLUTION=$(echo "$MANIFEST_RESOLUTION" | head -n 1 | grep -oE '^[0-9]+x[0-9]+' || echo "1920x1080")
           [ -z "$MANIFEST_RESOLUTION" ] && MANIFEST_RESOLUTION="1920x1080"
           
-          if [[ "$VIDEO_CODEC" == "hevc" ]]; then VIDEO_TAG_STR=",CODECS=\"hvc1.2.4.L153.B0,mp4a.40.2\""
-          else VIDEO_TAG_STR=",CODECS=\"avc1.640028,mp4a.40.2\""; fi
-          
-          VIDEO_MANIFEST_INJECTION=$(printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION" "$VIDEO_TAG_STR")
+          VIDEO_MANIFEST_INJECTION=$(printf '\n#EXT-X-STREAM-INF:BANDWIDTH=%s,RESOLUTION=%s,AUDIO="group_audio"\nstream_0.m3u8\n' "$BANDWIDTH" "$MANIFEST_RESOLUTION")
           mv "hls_output/$TARGET_DIR/master_clean.m3u8" "hls_output/$TARGET_DIR/master.m3u8"
           
           HAS_SUBS="false"; echo "" >> "hls_output/$TARGET_DIR/master.m3u8"

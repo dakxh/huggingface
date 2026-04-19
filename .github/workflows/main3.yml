@@ -360,6 +360,7 @@ jobs:
 
           vid_w = os.environ.get('VID_W', '1920')
           vid_h = os.environ.get('VID_H', '1080')
+          offset = float(os.environ.get('VID_START_TIME', '0.0'))
 
           def secs_to_tc(secs):
               h = int(secs / 3600); m = int((secs % 3600) / 60); s = int(secs % 60); f = int((secs % 1) * fps)

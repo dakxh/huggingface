@@ -294,6 +294,24 @@ jobs:
           
           payload["media"]["id"] = media_id_str
 
+          # ====== BEGIN: GENERATE SEARCH TAGS ======
+          search_tags = set()
+          
+          # Inject purely technical/release attributes
+          if is_imax: search_tags.add("imax")
+          if is_hdr: search_tags.add("hdr")
+          if resolution_str: search_tags.add(resolution_str.lower())
+          if payload["media"]["year"]: search_tags.add(str(payload["media"]["year"]))
+          
+          # Inject TMDB Original Title (for anime/foreign media fallback)
+          if 'match' in locals():
+              orig_title = match.get('original_title') or match.get('original_name') or ''
+              if orig_title and orig_title.lower() != payload["media"]["title"].lower():
+                  search_tags.add(re.sub(r'[^a-zA-Z0-9\s]', '', orig_title.lower()))
+                  
+          payload["media"]["search_tags"] = " ".join(filter(None, search_tags))
+          # ====== END: GENERATE SEARCH TAGS ======
+
           if sub_dir:
               # ====== EPISODE METADATA ======
               s_val, e_val = g.get('season'), g.get('episode')

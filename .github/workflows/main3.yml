@@ -582,7 +582,7 @@ jobs:
           A_IDX=0; AUDIO_SED_CMDS=""
           
           LANG_REGEX="(^|[^a-z])(en|eng|english)([^a-z]|$)"
-          AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english)([^a-z]|$)"
+          AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean)([^a-z]|$)"
           DETECTED_AUDIO=""; DETECTED_SUBS=""; DETECTED_PGS=""
           
           while IFS=',' read -r index ctype lang title; do

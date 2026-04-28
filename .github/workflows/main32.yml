@@ -414,7 +414,7 @@ jobs:
                 AUDIO_MAPS+=" -map 0:$index"
                 VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:${lang:-und},name:TRACK_${A_IDX} "
                 AUDIO_ENCODING+=" -c:a:$A_IDX copy "
-                AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"U_${DISPLAY_LANG} - Original\"/g; "
+                AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"${DISPLAY_LANG}\"/g; "
                 DETECTED_AUDIO="$DETECTED_AUDIO ${lang:-und}"
                 A_IDX=$((A_IDX + 1))
               fi
@@ -469,7 +469,7 @@ jobs:
           if [[ "$A_IDX" -eq 0 ]]; then
             DETECTED_AUDIO="und"
             AUDIO_MAPS+=" -map 0:a:0"; VAR_STREAM_MAP+="a:$A_IDX,agroup:audio,language:und,name:TRACK_${A_IDX} "
-            AUDIO_ENCODING+=" -c:a:$A_IDX copy "; AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"U_Unknown - Original\"/g; "
+            AUDIO_ENCODING+=" -c:a:$A_IDX copy "; AUDIO_SED_CMDS+="s/NAME=\"audio_$((A_IDX + 1))\"/NAME=\"Unknown - Original\"/g; "
           fi
           
           VAR_STREAM_MAP="${VAR_STREAM_MAP% }"

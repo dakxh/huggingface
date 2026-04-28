@@ -550,6 +550,13 @@ jobs:
             echo "❌ CRITICAL ERROR: hls_output is empty. Processing failed."
             exit 1
           fi
+
+      - name: Cooldown
+        if: env.found == 'true'
+        run: |
+          echo "⏳ Pausing for 5 minutes before sync..."
+          sleep 360
+          echo "✅ Resuming."
           
       - name: Sync Output to Storage Bucket
         if: env.found == 'true'

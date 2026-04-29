@@ -24,7 +24,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
-          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth
+          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth tqdm
 
       - name: Acknowledge Payload
         id: payload_ack
@@ -55,6 +55,7 @@ jobs:
           import requests
           from google.oauth2 import service_account
           from google.auth.transport.requests import Request
+          from tqdm import tqdm
 
           link = sys.argv[1]
           sa_json_str = os.environ.get('GCP_SA_JSON')
@@ -84,9 +85,20 @@ jobs:
                   url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
                   with requests.get(url, headers=headers, stream=True) as r:
                       r.raise_for_status()
+                      
+                      # Extract file size for the progress bar
+                      total_size = int(r.headers.get('Content-Length', 0))
+                      
+                      # Initialize tqdm tailored for GitHub Actions
+                      progress_bar = tqdm(total=total_size, unit='iB', unit_scale=True, desc=fname[:30], mininterval=2.0, ascii=True)
+                      
                       with open(os.path.join("workspace", fname), 'wb') as f:
                           for chunk in r.iter_content(chunk_size=1024*1024*10):
-                              if chunk: f.write(chunk)
+                              if chunk: 
+                                  f.write(chunk)
+                                  progress_bar.update(len(chunk))
+                      
+                      progress_bar.close()
                   print(f"✅ Download complete: {fname}")
               except Exception as e:
                   print(f"\n❌ Download Failed: {e}")

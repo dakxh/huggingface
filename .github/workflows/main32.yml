@@ -408,7 +408,7 @@ jobs:
           
           # ---> FIX: Re-introduced LANG_REGEX for English subtitles <---
           LANG_REGEX="(^|[^a-z])(en|eng|english)([^a-z]|$)"
-          AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean|zh|zho|chi|chinese|th|tha|thai)([^a-z]|$)"
+          AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean|zh|zho|chi|chinese|th|tha|thai|de|deu|ger|german)([^a-z]|$)"
           
           while IFS=',' read -r index ctype lang title; do
             if [[ "$ctype" == "audio" ]]; then

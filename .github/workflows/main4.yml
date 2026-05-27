@@ -112,8 +112,8 @@ jobs:
           
           ignore_patterns = [
             "NCOP", "NCED", "Teaser", "Special OP", "Special ED", "Creditless", "/NC/",
-            "/Trailers/", "/New folder/", "/Specials/", "/Extra/", "/Extras/",
-            "/NCOP & NCED/", "/Special/", "/Other/", "OP -", "ED -"
+            "/Trailers/", "/New folder/", "/Extra/", "/Extras/",
+            "/NCOP & NCED/", "/Other/", "OP -", "ED -"
           ]
           
           indices = []
@@ -949,12 +949,9 @@ jobs:
             ! -iname "*Special ED*" \
             ! -ipath "*/Trailers/*" \
             ! -ipath "*/New folder/*" \
-            ! -ipath "*/Specials/*" \
             ! -ipath "*/Extra/*" \
             ! -ipath "*/Extras/*" \
-            ! -ipath "*/Jujutsu Kaisen 0/*" \
             ! -ipath "*/NCOP & NCED/*" \
-            ! -ipath "*/Special/*" \
             ! -ipath "*/Other/*")
 
       - name: Just-In-Time (JIT) Metadata Merger

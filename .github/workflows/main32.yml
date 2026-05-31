@@ -149,13 +149,14 @@ jobs:
               aria2c --user-agent="$CHROME_UA" --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
               echo "✅ Download complete: Torrent Payload"
             else
-              echo "📦 Server reported Content-Type: $CONTENT_TYPE. Deploying yt-dlp with Cloudflare Impersonation engine..."
+              echo "📦 Server reported Content-Type: $CONTENT_TYPE. Deploying yt-dlp_linux (with native Cloudflare bypass)..."
               
-              # Install yt-dlp and curl-cffi to enable TLS network fingerprint spoofing
-              pip install -U --break-system-packages "yt-dlp[default]" curl-cffi
+              # Fetch the specific Linux build which has the TLS spoofing engine statically compiled inside
+              wget -qO yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
+              chmod +x yt-dlp
               
-              # Execute yt-dlp with an explicit browser target to bypass Cloudflare's JS challenges
-              yt-dlp --impersonate chrome --extractor-args "generic:impersonate" \
+              # Execute yt-dlp (Order of flags is specific so it doesn't swallow arguments)
+              ./yt-dlp --extractor-args "generic:impersonate" --impersonate "chrome" \
                 --downloader aria2c \
                 --downloader-args aria2c:"-x 16 -s 16 --min-split-size=1M --content-disposition-default-utf8=true" \
                 -o "workspace/%(title)s.%(ext)s" \

@@ -154,10 +154,9 @@ jobs:
               wget -qO yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
               chmod +x yt-dlp
               
-              # CRITICAL FIX: Do NOT hand off to aria2c. Let yt-dlp handle the download natively 
-              # so the Cloudflare session cookies and TLS spoofing remain active for the actual file transfer.
+              # Execute with the CORRECTLY spelled legacy flag
               ./yt-dlp --extractor-args "generic:impersonate" --impersonate "chrome" \
-                --legacyserver-connect \
+                --legacy-server-connect \
                 --add-header "Referer: $TARGET_LINK" \
                 -o "workspace/%(title)s.%(ext)s" \
                 "$TARGET_LINK"

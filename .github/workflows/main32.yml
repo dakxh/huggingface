@@ -97,10 +97,7 @@ jobs:
                   with requests.get(url, headers=headers, stream=True) as r:
                       r.raise_for_status()
                       
-                      # Extract file size for the progress bar
                       total_size = int(r.headers.get('Content-Length', 0))
-                      
-                      # Initialize tqdm tailored for GitHub Actions
                       progress_bar = tqdm(total=total_size, unit='iB', unit_scale=True, desc=fname[:30], mininterval=2.0, ascii=True)
                       
                       with open(os.path.join("workspace", fname), 'wb') as f:
@@ -136,10 +133,22 @@ jobs:
             fi
             
           elif [[ "$TARGET_LINK" == http* ]]; then
-            echo "📎 Detected HTTP Link. Fetching torrent file explicitly..."
-            curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
-            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
-            echo "✅ Download complete: Torrent Payload"
+            echo "📎 Detected HTTP Link. Analyzing server headers to determine payload type..."
+            # Follow redirects and extract the final Content-Type
+            CONTENT_TYPE=$(curl -sIL "$TARGET_LINK" | grep -i "^content-type:" | tail -n 1 | awk '{print $2}' | tr -d '\r')
+            
+            if [[ "$CONTENT_TYPE" == *"application/x-bittorrent"* ]] || [[ "$TARGET_LINK" == *.torrent* ]]; then
+              echo "🧲 Server reported Torrent file. Fetching explicitly..."
+              curl -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
+              aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
+              echo "✅ Download complete: Torrent Payload"
+            else
+              echo "📦 Server reported Direct Stream ($CONTENT_TYPE). Initiating high-speed direct download..."
+              # Use aria2c for parallel chunk downloading, respecting the server's provided filename
+              aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M --content-disposition-default-utf8=true -d workspace/ "$TARGET_LINK"
+              echo "✅ Download complete: Direct HTTP Payload"
+            fi
+            
           else
             echo "🧲 Detected Magnet Link. Fetching metadata natively..."
             aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
@@ -153,6 +162,7 @@ jobs:
           
           VIDEO_COUNT=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l)
           if [ "$VIDEO_COUNT" -eq 0 ]; then
+             echo "❌ No video files found in workspace after extraction."
              exit 1
           fi
 

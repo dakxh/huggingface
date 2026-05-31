@@ -154,8 +154,8 @@ jobs:
               # Install yt-dlp and curl-cffi to enable TLS network fingerprint spoofing
               pip install -U --break-system-packages "yt-dlp[default]" curl-cffi
               
-              # Execute yt-dlp with full TLS impersonation to bypass Cloudflare's JS challenges
-              yt-dlp --impersonate --extractor-args "generic:impersonate" \
+              # Execute yt-dlp with an explicit browser target to bypass Cloudflare's JS challenges
+              yt-dlp --impersonate chrome --extractor-args "generic:impersonate" \
                 --downloader aria2c \
                 --downloader-args aria2c:"-x 16 -s 16 --min-split-size=1M --content-disposition-default-utf8=true" \
                 -o "workspace/%(title)s.%(ext)s" \

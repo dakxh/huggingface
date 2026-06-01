@@ -34,7 +34,12 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip
+          # Add Cloudflare official repository for WARP
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          
+          # Install all dependencies including cloudflare-warp
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip cloudflare-warp
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth tqdm
 
       - name: Acknowledge Payload
@@ -133,36 +138,47 @@ jobs:
             fi
             
           elif [[ "$TARGET_LINK" == http* ]]; then
-            echo "📎 Detected HTTP Link. Analyzing server headers to determine payload type..."
+            echo "📎 Detected HTTP Link. Engaging Cloudflare WARP Proxy..."
             
-            CHROME_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+            # Initialize Cloudflare WARP in local proxy mode
+            warp-cli --accept-tos registration new
+            warp-cli --accept-tos mode proxy
+            warp-cli --accept-tos connect
             
-            CONTENT_TYPE=$(curl -sIL -A "$CHROME_UA" \
-              -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8' \
-              -H 'accept-language: en-US,en;q=0.5' \
-              -H 'sec-ch-ua-platform: "Windows"' \
-              "$TARGET_LINK" | grep -i "^content-type:" | tail -n 1 | awk '{print $2}' | tr -d '\r')
+            echo "⏳ Waiting for WARP connection to stabilize..."
+            sleep 5
             
-            if [[ "$CONTENT_TYPE" == *"application/x-bittorrent"* ]] || [[ "$TARGET_LINK" == *.torrent* ]]; then
-              echo "🧲 Server reported Torrent file. Fetching explicitly..."
-              curl -A "$CHROME_UA" -s -L -o "workspace/payload.torrent" "$TARGET_LINK"
-              aria2c --user-agent="$CHROME_UA" --bt-stop-timeout=600 --timeout=600 --seed-time=0 "workspace/payload.torrent" -d workspace/
-              echo "✅ Download complete: Torrent Payload"
+            # Verify proxy is active (WARP defaults to SOCKS5 on 127.0.0.1:40000)
+            if curl -s -x socks5://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
+              echo "✅ WARP Proxy successfully established."
             else
-              echo "📦 Server reported Content-Type: $CONTENT_TYPE. Deploying yt-dlp_linux (Native CF bypass)..."
-              
-              wget -qO yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
-              chmod +x yt-dlp
-              
-              # Execute with the CORRECTLY spelled legacy flag
-              ./yt-dlp --extractor-args "generic:impersonate" --impersonate "chrome" \
-                --legacy-server-connect \
-                --add-header "Referer: $TARGET_LINK" \
-                -o "workspace/%(title)s.%(ext)s" \
-                "$TARGET_LINK"
-                
-              echo "✅ Download attempt complete."
+              echo "⚠️ WARP Proxy failed to connect. Proceeding anyway, but download may fail."
             fi
+            
+            echo "📦 Initiating high-speed direct download via WARP..."
+            
+            # Execute aria2c routed through the proxy with your exact headers
+            aria2c --all-proxy="socks5://127.0.0.1:40000" \
+              --header='Sec-Ch-Ua: "Not-A.Brand";v="24", "Chromium";v="146"' \
+              --header='Sec-Ch-Ua-Mobile: ?0' \
+              --header='Sec-Ch-Ua-Platform: "Windows"' \
+              --header='Accept-Language: en-US,en;q=0.9' \
+              --header='Upgrade-Insecure-Requests: 1' \
+              --user-agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' \
+              --header='Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+              --header='Sec-Fetch-Site: none' \
+              --header='Sec-Fetch-Mode: navigate' \
+              --header='Sec-Fetch-User: ?1' \
+              --header='Sec-Fetch-Dest: document' \
+              --header='Priority: u=0, i' \
+              --header='Connection: keep-alive' \
+              --max-connection-per-server=16 --split=16 --min-split-size=1M --content-disposition-default-utf8=true \
+              -d workspace/ "$TARGET_LINK"
+              
+            echo "✅ Download attempt complete. Disconnecting WARP..."
+            warp-cli --accept-tos disconnect
+            
+          else
             
           else
             echo "🧲 Detected Magnet Link. Fetching metadata natively..."

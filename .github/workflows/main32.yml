@@ -179,8 +179,6 @@ jobs:
             warp-cli --accept-tos disconnect
             
           else
-            
-          else
             echo "🧲 Detected Magnet Link. Fetching metadata natively..."
             aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
             echo "✅ Download complete: Magnet Payload"
@@ -196,7 +194,7 @@ jobs:
              echo "❌ No video files found in workspace after extraction."
              exit 1
           fi
-
+          
       - name: Generate Python Helper Scripts
         if: env.found == 'true'
         run: |

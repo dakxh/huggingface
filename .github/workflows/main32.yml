@@ -155,23 +155,25 @@ jobs:
             fi
             
             echo "🔍 Pinging origin server to extract official filename..."
-            # Ping the server through WARP to get the HTTP response headers
             HEADERS=$(curl -sIL -x socks5h://127.0.0.1:40000 \
               -H 'Sec-Ch-Ua: "Not-A.Brand";v="24", "Chromium";v="146"' \
               -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' \
               "$TARGET_LINK")
               
-            # Extract and URL-decode the filename from the Content-Disposition header
-            SERVER_FILENAME=$(python3 -c "
+            cat << 'EOF' > name_parser.py
             import sys, re, urllib.parse
             headers = sys.stdin.read()
             match = re.search(r'(?i)content-disposition:.*?filename\*?=(?:\"?UTF-8\'\'\"?)?([^\r\n;]+)', headers)
             if match:
-                val = match.group(1).strip(' \"\'')
-                print(urllib.parse.unquote(val))
+              val = match.group(1).strip(' "\'')
+              print(urllib.parse.unquote(val))
             else:
-                print('Direct_Download_Payload.mkv')
-            " <<< "$HEADERS")
+              print('Direct_Download_Payload.mkv')
+            EOF
+            
+            # Execute the isolated Python script to bypass YAML indentation limits
+            SERVER_FILENAME=$(python3 name_parser.py <<< "$HEADERS")
+            rm name_parser.py
             
             echo "🎯 Extracted Target Filename: $SERVER_FILENAME"
             

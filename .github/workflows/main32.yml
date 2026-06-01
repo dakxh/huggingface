@@ -21,17 +21,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Free Up Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Install Dependencies
         run: |
           # Add Cloudflare official repository for WARP
@@ -56,16 +45,18 @@ jobs:
         run: |
           mkdir -p workspace
           echo "Evaluating Payload Type..."
-          
+
           if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
+
             if [[ "$TARGET_LINK" == *\&at=* ]] || [[ "$TARGET_LINK" == *confirm=t* ]]; then
               echo "🚀 Detected Pre-Authenticated Direct Drive Link. Bypassing APIs and fetching natively..."
               cd workspace
               curl -# -L -OJ "$TARGET_LINK"
               cd ..
+
             else
               echo "🌐 Detected Standard Google Drive Link. Initializing Lightning SA Downloader..."
-              
+
               cat << 'EOF' > gdrive_sa_dl.py
           import os, sys, re, json
           import requests
@@ -82,7 +73,9 @@ jobs:
 
           try:
               sa_info = json.loads(sa_json_str)
-              creds = service_account.Credentials.from_service_account_info(sa_info, scopes=['https://www.googleapis.com/auth/drive.readonly'])
+              creds = service_account.Credentials.from_service_account_info(
+                  sa_info, scopes=['https://www.googleapis.com/auth/drive.readonly']
+              )
               creds.refresh(Request())
               headers = {'Authorization': f'Bearer {creds.token}'}
           except Exception as e:
@@ -101,16 +94,16 @@ jobs:
                   url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
                   with requests.get(url, headers=headers, stream=True) as r:
                       r.raise_for_status()
-                      
                       total_size = int(r.headers.get('Content-Length', 0))
-                      progress_bar = tqdm(total=total_size, unit='iB', unit_scale=True, desc=fname[:30], mininterval=2.0, ascii=True)
-                      
+                      progress_bar = tqdm(
+                          total=total_size, unit='iB', unit_scale=True,
+                          desc=fname[:30], mininterval=2.0, ascii=True
+                      )
                       with open(os.path.join("workspace", fname), 'wb') as f:
-                          for chunk in r.iter_content(chunk_size=1024*1024*10):
-                              if chunk: 
+                          for chunk in r.iter_content(chunk_size=1024 * 1024 * 10):
+                              if chunk:
                                   f.write(chunk)
                                   progress_bar.update(len(chunk))
-                      
                       progress_bar.close()
                   print(f"✅ Download complete: {fname}")
               except Exception as e:
@@ -125,66 +118,72 @@ jobs:
                   sys.exit(1)
 
               if res.get('mimeType') == 'application/vnd.google-apps.folder':
-                  q_url = f"https://www.googleapis.com/drive/v3/files?q='{fid}'+in+parents+and+trashed=false&fields=files(id,name,mimeType)"
+                  q_url = (
+                      f"https://www.googleapis.com/drive/v3/files"
+                      f"?q='{fid}'+in+parents+and+trashed=false"
+                      f"&fields=files(id,name,mimeType)"
+                  )
                   children = requests.get(q_url, headers=headers).json().get('files', [])
                   for child in children:
-                      if child['mimeType'] == 'application/vnd.google-apps.folder': process_node(child['id'])
-                      else: download_file(child['id'], child['name'])
-              else: download_file(fid, res['name'])
+                      if child['mimeType'] == 'application/vnd.google-apps.folder':
+                          process_node(child['id'])
+                      else:
+                          download_file(child['id'], child['name'])
+              else:
+                  download_file(fid, res['name'])
 
           process_node(file_id)
           EOF
+
               python gdrive_sa_dl.py "$TARGET_LINK"
             fi
-            
+
           elif [[ "$TARGET_LINK" == http* ]]; then
             echo "📎 Detected HTTP Link. Engaging Cloudflare WARP Proxy..."
-            
-            # Initialize Cloudflare WARP in local proxy mode
+
             warp-cli --accept-tos registration new
             warp-cli --accept-tos mode proxy
             warp-cli --accept-tos connect
-            
+
             echo "⏳ Waiting for WARP connection to stabilize..."
             sleep 5
-            
+
             if curl -s -x socks5://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
               echo "✅ WARP Proxy successfully established."
             else
               echo "⚠️ WARP Proxy failed to connect. Proceeding anyway, but download may fail."
             fi
-            
+
             echo "🔍 Pinging origin server to extract official filename..."
             HEADERS=$(curl -sIL -x socks5h://127.0.0.1:40000 \
               -H 'Sec-Ch-Ua: "Not-A.Brand";v="24", "Chromium";v="146"' \
               -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' \
               "$TARGET_LINK")
-              
+
             cat << 'EOF' > name_parser.py
-            import sys, re, urllib.parse
-            headers = sys.stdin.read()
-            match = re.search(r'(?i)content-disposition:.*?filename\*?=(?:\"?UTF-8\'\'\"?)?([^\r\n;]+)', headers)
-            if match:
+          import sys, re, urllib.parse
+          headers = sys.stdin.read()
+          match = re.search(
+              r'(?i)content-disposition:.*?filename\*?=(?:\"?UTF-8\'\'\"?)?([^\r\n;]+)', headers
+          )
+          if match:
               val = match.group(1).strip(' "\'')
               print(urllib.parse.unquote(val))
-            else:
+          else:
               print('Direct_Download_Payload.mkv')
-            EOF
-            
-            # Execute the isolated Python script to bypass YAML indentation limits
+          EOF
+
             SERVER_FILENAME=$(python3 name_parser.py <<< "$HEADERS")
             rm name_parser.py
-            
+
             echo "🎯 Extracted Target Filename: $SERVER_FILENAME"
-            
             echo "📦 Initiating high-speed direct download via WARP SOCKS5..."
-            
-            # Fetch the standalone yt-dlp binary
+
             wget -qO yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
             chmod +x yt-dlp
-            
-            # Execute download through the WARP proxy, forcing the extracted server filename
-            ./yt-dlp --proxy "socks5://127.0.0.1:40000" \
+
+            ./yt-dlp \
+              --proxy "socks5://127.0.0.1:40000" \
               --add-header 'Sec-Ch-Ua: "Not-A.Brand";v="24", "Chromium";v="146"' \
               --add-header 'Sec-Ch-Ua-Mobile: ?0' \
               --add-header 'Sec-Ch-Ua-Platform: "Windows"' \
@@ -201,25 +200,31 @@ jobs:
               -N 16 \
               -o "workspace/$SERVER_FILENAME" \
               "$TARGET_LINK"
-              
+
             echo "✅ Download attempt complete. Disconnecting WARP..."
             warp-cli --accept-tos disconnect
-            
+
           else
             echo "🧲 Detected Magnet Link. Fetching metadata natively..."
-            aria2c --bt-stop-timeout=600 --timeout=600 --seed-time=0 --bt-save-metadata=true "$TARGET_LINK" -d workspace/
+            aria2c \
+              --bt-stop-timeout=600 \
+              --timeout=600 \
+              --seed-time=0 \
+              --bt-save-metadata=true \
+              "$TARGET_LINK" \
+              -d workspace/
             echo "✅ Download complete: Magnet Payload"
           fi
-          
+
           while read -u 9 ZIP_FILE; do
             unzip -q -o "$ZIP_FILE" -d workspace/ || true
             rm "$ZIP_FILE"
           done 9< <(find workspace -type f -name "*.zip")
-          
+
           VIDEO_COUNT=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l)
           if [ "$VIDEO_COUNT" -eq 0 ]; then
-             echo "❌ No video files found in workspace after extraction."
-             exit 1
+            echo "❌ No video files found in workspace after extraction."
+            exit 1
           fi
           
       - name: Generate Python Helper Scripts

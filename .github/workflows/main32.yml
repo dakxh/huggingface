@@ -27,8 +27,8 @@ jobs:
           curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
           
-          # Install all dependencies including cloudflare-warp
-          sudo apt-get update && sudo apt-get install -y ffmpeg aria2 libcurl4-openssl-dev jq unzip cloudflare-warp
+          # Removed qbittorrent-nox from apt to use the static portable binary later
+          sudo apt-get update && sudo apt-get install -y ffmpeg libcurl4-openssl-dev jq unzip cloudflare-warp
           pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth tqdm
 
       - name: Acknowledge Payload
@@ -205,7 +205,11 @@ jobs:
             warp-cli --accept-tos disconnect
 
           else
-            echo "🧲 Detected Magnet Link. Initializing qBittorrent headless daemon..."
+            echo "🧲 Detected Magnet Link. Fetching portable qBittorrent-nox static binary..."
+            
+            # Using standalone static binary guarantees bypassing apt/PPA library issues 
+            wget -qO qbittorrent-nox https://github.com/userdocs/qbittorrent-nox-static/releases/latest/download/x86_64-qbittorrent-nox
+            chmod +x qbittorrent-nox
             
             mkdir -p ~/.config/qBittorrent
             cat << EOF_CONF > ~/.config/qBittorrent/qBittorrent.conf
@@ -218,7 +222,7 @@ jobs:
           BitTorrent\Session\MaxConnections=-1
           EOF_CONF
 
-            qbittorrent-nox -d
+            ./qbittorrent-nox -d
             
             cat << 'EOF_PY' > qbit_monitor.py
           import time, requests, sys
@@ -267,12 +271,10 @@ jobs:
                       last_progress = progress
                       start_time = time.time()
                       
-                  # Standard states representing a completed download seeding payload
                   if progress == 1.0 or state.endswith('UP') or state == 'uploading':
                       print("✅ Download complete: Magnet Payload")
                       break
                       
-                  # Failsafe: Abort if torrent stalls (0 change) for 10 straight minutes
                   if time.time() - start_time > 600:
                       print("❌ Torrent stalled for 10 minutes. Aborting.")
                       sys.exit(1)
@@ -288,6 +290,7 @@ jobs:
             echo "🛑 Stopping qBittorrent daemon..."
             curl -s -X POST http://127.0.0.1:8085/api/v2/app/shutdown || true
             sleep 3
+            rm qbittorrent-nox
           fi
 
           while read -u 9 ZIP_FILE; do
@@ -562,7 +565,6 @@ jobs:
           DETECTED_SUBS_JSON="["
           FIRST_SUB=1
           
-          # ---> FIX: Re-introduced LANG_REGEX for English subtitles <---
           LANG_REGEX="(^|[^a-z])(en|eng|english)([^a-z]|$)"
           AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean|zh|zho|chi|chinese|th|tha|thai|de|deu|ger|german)([^a-z]|$)"
           
@@ -587,7 +589,6 @@ jobs:
                 A_IDX=$((A_IDX + 1))
               fi
             elif [[ "$ctype" == "subtitle" ]]; then
-              # ---> FIX: Enforced English-only filtering before extraction <---
               if [[ "$lang $title" =~ $LANG_REGEX ]]; then
                 # Raw Native Sidecar Extraction
                 SUB_CODEC=$(ffprobe -v error -select_streams $index -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')

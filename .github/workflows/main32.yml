@@ -222,7 +222,7 @@ jobs:
           BitTorrent\Session\MaxConnections=-1
           EOF_CONF
 
-            ./qbittorrent-nox -d
+            ./qbittorrent-nox -d --confirm-legal-notice
             
             cat << 'EOF_PY' > qbit_monitor.py
           import time, requests, sys

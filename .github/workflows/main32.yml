@@ -43,6 +43,20 @@ jobs:
         env:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
         run: |
+          echo "🌐 Engaging Cloudflare WARP Proxy..."
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos connect
+
+          echo "⏳ Waiting for WARP connection to stabilize..."
+          sleep 5
+
+          if curl -s -x socks5://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
+            echo "✅ WARP Proxy successfully established."
+          else
+            echo "⚠️ WARP Proxy failed to connect. Proceeding anyway, but downloads may fail."
+          fi
+
           mkdir -p workspace
           echo "Evaluating Payload Type..."
 
@@ -139,20 +153,7 @@ jobs:
             fi
 
           elif [[ "$TARGET_LINK" == http* ]]; then
-            echo "📎 Detected HTTP Link. Engaging Cloudflare WARP Proxy..."
-
-            warp-cli --accept-tos registration new
-            warp-cli --accept-tos mode proxy
-            warp-cli --accept-tos connect
-
-            echo "⏳ Waiting for WARP connection to stabilize..."
-            sleep 5
-
-            if curl -s -x socks5://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
-              echo "✅ WARP Proxy successfully established."
-            else
-              echo "⚠️ WARP Proxy failed to connect. Proceeding anyway, but download may fail."
-            fi
+            echo "📎 Detected HTTP Link..."
 
             echo "🔍 Pinging origin server to extract official filename..."
             HEADERS=$(curl -sIL -x socks5h://127.0.0.1:40000 \
@@ -201,8 +202,7 @@ jobs:
               -o "workspace/$SERVER_FILENAME" \
               "$TARGET_LINK"
 
-            echo "✅ Download attempt complete. Disconnecting WARP..."
-            warp-cli --accept-tos disconnect
+            echo "✅ Direct HTTP Download complete."
 
           else
             echo "🧲 Detected Magnet Link. Fetching metadata natively..."
@@ -215,6 +215,9 @@ jobs:
               -d workspace/
             echo "✅ Download complete: Magnet Payload"
           fi
+
+          echo "🔌 Disconnecting WARP Proxy..."
+          warp-cli --accept-tos disconnect || true
 
           while read -u 9 ZIP_FILE; do
             unzip -q -o "$ZIP_FILE" -d workspace/ || true

@@ -207,21 +207,11 @@ jobs:
           else
             echo "🧲 Detected Magnet Link. Engaging Proxychains for WARP..."
             
-            # 1. Install Proxychains
             sudo apt-get install -y proxychains4
             
-            # 2. Overwrite Proxychains config to strictly use our WARP SOCKS5 port
-            sudo bash -c 'cat << EOF > /etc/proxychains4.conf
-            strict_chain
-            proxy_dns
-            remote_dns_subnet 224
-            tcp_read_time_out 15000
-            tcp_connect_time_out 8000
-            [ProxyList]
-            socks5 127.0.0.1 40000
-            EOF'
+            # Using printf to avoid YAML indentation breaking bash heredocs
+            printf "strict_chain\nproxy_dns\nremote_dns_subnet 224\ntcp_read_time_out 15000\ntcp_connect_time_out 8000\n[ProxyList]\nsocks5 127.0.0.1 40000\n" | sudo tee /etc/proxychains4.conf > /dev/null
 
-            # 3. Execute aria2c wrapped in Proxychains (without the broken --all-proxy flag)
             proxychains4 -q aria2c \
               --bt-stop-timeout=600 \
               --timeout=600 \

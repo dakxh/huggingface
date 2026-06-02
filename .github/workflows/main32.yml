@@ -205,14 +205,15 @@ jobs:
             echo "✅ Direct HTTP Download complete."
 
           else
-            echo "🧲 Detected Magnet Link. Fetching metadata natively..."
-            aria2c \
-              --bt-stop-timeout=600 \
-              --timeout=600 \
-              --seed-time=0 \
-              --bt-save-metadata=true \
-              "$TARGET_LINK" \
-              -d workspace/
+            echo "🧲 Detected Magnet Link. Fetching metadata via WARP..."
+          aria2c \
+            --all-proxy="socks5://127.0.0.1:40000" \
+            --bt-stop-timeout=600 \
+            --timeout=600 \
+            --seed-time=0 \
+            --bt-save-metadata=true \
+            "$TARGET_LINK" \
+            -d workspace/
             echo "✅ Download complete: Magnet Payload"
           fi
 

@@ -231,7 +231,11 @@ jobs:
           target_link = sys.argv[1]
           base_url = "http://127.0.0.1:8085/api/v2"
           
-          print("⏳ Waiting for qBittorrent WebUI to start...")
+          def log(msg):
+              # Force flush to bypass GitHub Actions log buffering
+              print(msg, flush=True)
+          
+          log("⏳ Waiting for qBittorrent WebUI to start...")
           for _ in range(30):
               try:
                   requests.get(f"{base_url}/app/version")
@@ -239,50 +243,61 @@ jobs:
               except:
                   time.sleep(1)
           else:
-              print("❌ qBittorrent failed to start.")
+              log("❌ qBittorrent failed to start.")
               sys.exit(1)
               
-          print("🔗 Adding magnet link...")
+          log("🔗 Adding magnet link to daemon...")
           res = requests.post(f"{base_url}/torrents/add", data={'urls': target_link})
           if res.status_code != 200:
-              print(f"❌ Failed to add magnet link: {res.text}")
+              log(f"❌ Failed to add magnet link: {res.text}")
               sys.exit(1)
               
-          print("📡 Magnet added. Monitoring progress...")
+          log("📡 Magnet added successfully. Initializing telemetry stream...")
           last_progress = -1
           start_time = time.time()
+          last_log_time = 0
           
           while True:
               try:
                   torrents = requests.get(f"{base_url}/torrents/info").json()
                   if not torrents:
                       if time.time() - start_time > 60:
-                          print("❌ Timeout waiting for torrent metadata.")
+                          log("❌ Timeout: Torrent never appeared in client. Aborting.")
                           sys.exit(1)
                       time.sleep(2)
                       continue
                       
                   t = torrents[0]
-                  state = t.get('state', '')
+                  state = t.get('state', 'unknown')
                   progress = t.get('progress', 0)
-                  name = t.get('name', 'Unknown')
+                  name = t.get('name', 'Fetching_Metadata...')
+                  dl_speed = t.get('dlspeed', 0) / (1024 * 1024) # Convert to MB/s
+                  peers = t.get('num_leechs', 0)
+                  seeds = t.get('num_seeds', 0)
                   
-                  if progress != last_progress:
-                      print(f"⬇️ Downloading: {progress * 100:.2f}% | State: {state} | Name: {name[:50]}")
-                      last_progress = progress
+                  # Reset the stall timeout clock ONLY if we actually downloaded a new chunk
+                  if progress > last_progress:
                       start_time = time.time()
+                      last_progress = progress
+                  
+                  # Fire a heartbeat log every 10 seconds, regardless of progress
+                  current_time = time.time()
+                  if current_time - last_log_time >= 10:
+                      log(f"🔄 State: [{state.upper()}] | Progress: {progress * 100:.2f}% | Speed: {dl_speed:.2f} MB/s | Seeds: {seeds} | Peers: {peers} | File: {name[:45]}")
+                      last_log_time = current_time
                       
                   if progress == 1.0 or state.endswith('UP') or state == 'uploading':
-                      print("✅ Download complete: Magnet Payload")
+                      log("\n✅ Download phase complete: Payload secured.")
                       break
                       
+                  # 10 minute stall timeout
                   if time.time() - start_time > 600:
-                      print("❌ Torrent stalled for 10 minutes. Aborting.")
+                      log("\n❌ Torrent stalled for 10 minutes with absolutely zero progress. Aborting to save runner minutes.")
                       sys.exit(1)
                       
-                  time.sleep(5)
+                  time.sleep(2) # Polling interval
               except Exception as e:
-                  print(f"⚠️ Error checking status: {e}")
+                  log(f"⚠️ API Polling Error: {e}")
                   time.sleep(2)
           EOF_PY
           

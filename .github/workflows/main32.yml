@@ -63,157 +63,66 @@ jobs:
             sleep 5
           done
 
+          # --- ROUTING ENGINE ---
+          IS_TORRENT=false
+          if [[ "$TARGET_LINK" == magnet:* ]] || [[ "$TARGET_LINK" == *.torrent* ]]; then
+            IS_TORRENT=true
+          fi
+
           if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
-
+            # --- BRANCH 1: GOOGLE DRIVE ---
             if [[ "$TARGET_LINK" == *\&at=* ]] || [[ "$TARGET_LINK" == *confirm=t* ]]; then
-              echo "🚀 Detected Pre-Authenticated Direct Drive Link. Bypassing APIs and fetching natively..."
-              cd workspace
-              curl -# -L -OJ "$TARGET_LINK"
-              cd ..
-
+              echo "🚀 Detected Pre-Authenticated Direct Drive Link."
+              cd workspace && curl -# -L -OJ "$TARGET_LINK" && cd ..
             else
               echo "🌐 Detected Standard Google Drive Link. Initializing Lightning SA Downloader..."
-
               cat << 'EOF' > gdrive_sa_dl.py
-          import os, sys, re, json
-          import requests
+          import os, sys, re, json, requests
           from google.oauth2 import service_account
           from google.auth.transport.requests import Request
           from tqdm import tqdm
-
-          link = sys.argv[1]
-          sa_json_str = os.environ.get('GCP_SA_JSON')
-
-          if not sa_json_str:
-              print("❌ CRITICAL ERROR: GCP_SA_JSON secret is missing.")
-              sys.exit(1)
-
-          try:
-              sa_info = json.loads(sa_json_str)
-              creds = service_account.Credentials.from_service_account_info(
-                  sa_info, scopes=['https://www.googleapis.com/auth/drive.readonly']
-              )
-              creds.refresh(Request())
-              headers = {'Authorization': f'Bearer {creds.token}'}
-          except Exception as e:
-              print(f"❌ Authentication Failed: {e}")
-              sys.exit(1)
-
+          link, sa_json_str = sys.argv[1], os.environ.get('GCP_SA_JSON')
+          if not sa_json_str: sys.exit(1)
+          sa_info = json.loads(sa_json_str)
+          creds = service_account.Credentials.from_service_account_info(sa_info, scopes=['https://www.googleapis.com/auth/drive.readonly'])
+          creds.refresh(Request())
+          headers = {'Authorization': f'Bearer {creds.token}'}
           match = re.search(r'(id=|/d/|folders/)([a-zA-Z0-9_-]+)', link)
-          if not match:
-              print("❌ Could not extract ID from link.")
-              sys.exit(1)
           file_id = match.group(2)
-
           def download_file(fid, fname):
-              print(f"⬇️ Authenticated SA Download started for: {fname}")
-              try:
-                  url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
-                  with requests.get(url, headers=headers, stream=True) as r:
-                      r.raise_for_status()
-                      total_size = int(r.headers.get('Content-Length', 0))
-                      progress_bar = tqdm(
-                          total=total_size, unit='iB', unit_scale=True,
-                          desc=fname[:30], mininterval=2.0, ascii=True
-                      )
-                      with open(os.path.join("workspace", fname), 'wb') as f:
-                          for chunk in r.iter_content(chunk_size=1024 * 1024 * 10):
-                              if chunk:
-                                  f.write(chunk)
-                                  progress_bar.update(len(chunk))
-                      progress_bar.close()
-                  print(f"✅ Download complete: {fname}")
-              except Exception as e:
-                  print(f"\n❌ Download Failed: {e}")
-                  sys.exit(1)
-
+              url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+              with requests.get(url, headers=headers, stream=True) as r:
+                  total_size = int(r.headers.get('Content-Length', 0))
+                  with open(os.path.join("workspace", fname), 'wb') as f:
+                      with tqdm(total=total_size, unit='iB', unit_scale=True, desc=fname[:30], ascii=True) as pbar:
+                          for chunk in r.iter_content(chunk_size=1024*1024*10):
+                              if chunk: f.write(chunk); pbar.update(len(chunk))
           def process_node(fid):
-              try:
-                  url = f"https://www.googleapis.com/drive/v3/files/{fid}?fields=name,mimeType"
-                  res = requests.get(url, headers=headers).json()
-              except Exception as e:
-                  sys.exit(1)
-
+              res = requests.get(f"https://www.googleapis.com/drive/v3/files/{fid}?fields=name,mimeType", headers=headers).json()
               if res.get('mimeType') == 'application/vnd.google-apps.folder':
-                  q_url = (
-                      f"https://www.googleapis.com/drive/v3/files"
-                      f"?q='{fid}'+in+parents+and+trashed=false"
-                      f"&fields=files(id,name,mimeType)"
-                  )
-                  children = requests.get(q_url, headers=headers).json().get('files', [])
-                  for child in children:
-                      if child['mimeType'] == 'application/vnd.google-apps.folder':
-                          process_node(child['id'])
-                      else:
-                          download_file(child['id'], child['name'])
-              else:
-                  download_file(fid, res['name'])
-
+                  children = requests.get(f"https://www.googleapis.com/drive/v3/files?q='{fid}'+in+parents+and+trashed=false", headers=headers).json().get('files', [])
+                  for child in children: process_node(child['id'])
+              else: download_file(fid, res['name'])
           process_node(file_id)
           EOF
-
               python gdrive_sa_dl.py "$TARGET_LINK"
             fi
 
-          elif [[ "$TARGET_LINK" == http* ]]; then
-            echo "📎 Detected HTTP Link. Utilizing Established WARP Proxy..."
-
-            echo "🔍 Pinging origin server to extract official filename..."
-            HEADERS=$(curl -sIL -x socks5h://127.0.0.1:40000 \
-              -H 'Sec-Ch-Ua: "Not-A.Brand";v="24", "Chromium";v="146"' \
-              -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' \
-              "$TARGET_LINK")
-
-            cat << 'EOF' > name_parser.py
-          import sys, re, urllib.parse
-          headers = sys.stdin.read()
-          match = re.search(
-              r'(?i)content-disposition:.*?filename\*?=(?:\"?UTF-8\'\'\"?)?([^\r\n;]+)', headers
-          )
-          if match:
-              val = match.group(1).strip(' "\'')
-              print(urllib.parse.unquote(val))
-          else:
-              print('Direct_Download_Payload.mkv')
-          EOF
-
-            SERVER_FILENAME=$(python3 name_parser.py <<< "$HEADERS")
-            rm name_parser.py
-
-            echo "🎯 Extracted Target Filename: $SERVER_FILENAME"
-            echo "📦 Initiating high-speed direct download via WARP SOCKS5..."
-
-            wget -qO yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
-            chmod +x yt-dlp
-
-            ./yt-dlp \
-              --proxy "socks5://127.0.0.1:40000" \
-              --add-header 'Sec-Ch-Ua: "Not-A.Brand";v="24", "Chromium";v="146"' \
-              --add-header 'Sec-Ch-Ua-Mobile: ?0' \
-              --add-header 'Sec-Ch-Ua-Platform: "Windows"' \
-              --add-header 'Accept-Language: en-US,en;q=0.9' \
-              --add-header 'Upgrade-Insecure-Requests: 1' \
-              --add-header 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' \
-              --add-header 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
-              --add-header 'Sec-Fetch-Site: none' \
-              --add-header 'Sec-Fetch-Mode: navigate' \
-              --add-header 'Sec-Fetch-User: ?1' \
-              --add-header 'Sec-Fetch-Dest: document' \
-              --add-header 'Priority: u=0, i' \
-              --add-header 'Connection: keep-alive' \
-              -N 16 \
-              -o "workspace/$SERVER_FILENAME" \
-              "$TARGET_LINK"
-
-            echo "✅ Download attempt complete."
+          elif [[ "$IS_TORRENT" == "false" ]] && [[ "$TARGET_LINK" == http* ]]; then
+            # --- BRANCH 2: DIRECT HTTP (yt-dlp) ---
+            echo "📎 Detected Direct HTTP Link. Using Global WARP Proxy..."
+            HEADERS=$(curl -sIL -x socks5h://127.0.0.1:40000 -H 'User-Agent: Mozilla/5.0' "$TARGET_LINK")
+            SERVER_FILENAME=$(python3 -c "import sys, re, urllib.parse; h=sys.stdin.read(); m=re.search(r'(?i)filename\*?=(?:\"?UTF-8\'\'\"?)?([^\r\n;]+)', h); print(urllib.parse.unquote(m.group(1).strip(' \"\'')) if m else 'Direct_Payload.mkv')" <<< "$HEADERS")
+            wget -qO yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux && chmod +x yt-dlp
+            ./yt-dlp --proxy "socks5://127.0.0.1:40000" --add-header 'User-Agent: Mozilla/5.0' -N 16 -o "workspace/$SERVER_FILENAME" "$TARGET_LINK"
 
           else
-            echo "🧲 Detected Magnet Link. Configuring qBittorrent with WARP Proxy..."
-            
+            # --- BRANCH 3: TORRENT ENGINE (Magnet or .torrent) ---
+            echo "🧲 Torrent Source Detected. Configuring Aggressive Cloud Engine..."
             wget -qO qbittorrent-nox https://github.com/userdocs/qbittorrent-nox-static/releases/latest/download/x86_64-qbittorrent-nox
             chmod +x qbittorrent-nox
-            
             mkdir -p ~/.config/qBittorrent
+            
             cat << EOF_CONF > ~/.config/qBittorrent/qBittorrent.conf
           [Preferences]
           WebUI\Port=8085
@@ -221,7 +130,13 @@ jobs:
           WebUI\AuthSubnetWhitelist=127.0.0.1/32, ::1/128
           WebUI\LocalHostAuth=false
           Downloads\SavePath=$(pwd)/workspace/
-          BitTorrent\Session\MaxConnections=-1
+          # Aggressive NAT piercing & Proxy forcing
+          BitTorrent\Session\MaxConnections=500
+          BitTorrent\Session\Encryption=1
+          BitTorrent\Session\DHT=true
+          BitTorrent\Session\PeX=true
+          BitTorrent\Session\LSD=false
+          Network\Port=443
           Proxy\Type=2
           Proxy\IP=127.0.0.1
           Proxy\Port=40000
@@ -234,107 +149,55 @@ jobs:
             
             cat << 'EOF_PY' > qbit_monitor.py
           import time, requests, sys
-          
-          target_link = sys.argv[1]
-          base_url = "http://127.0.0.1:8085/api/v2"
-          
-          def log(msg):
-              print(msg, flush=True)
-          
-          log("⏳ Waiting for qBittorrent WebUI to start...")
+          target_link, base_url = sys.argv[1], "http://127.0.0.1:8085/api/v2"
+          def log(m): print(m, flush=True)
           for _ in range(30):
-              try:
-                  requests.get(f"{base_url}/app/version")
-                  break
-              except:
-                  time.sleep(1)
-          else:
-              log("❌ qBittorrent failed to start.")
-              sys.exit(1)
-              
-          log("🔗 Adding magnet link to daemon...")
+              try: 
+                  requests.get(f"{base_url}/app/version"); break
+              except: time.sleep(1)
           res = requests.post(f"{base_url}/torrents/add", data={'urls': target_link})
-          if res.status_code != 200:
-              log(f"❌ Failed to add magnet link: {res.text}")
-              sys.exit(1)
-              
-          log("📡 Magnet added successfully via Proxy. Initializing telemetry stream...")
-          last_progress = -1
-          start_time = time.time()
-          last_log_time = 0
-          
+          log("📡 Torrent added. Waiting for peers...")
+          last_p, start_t, last_log = -1, time.time(), 0
           while True:
               try:
                   torrents = requests.get(f"{base_url}/torrents/info").json()
-                  if not torrents:
-                      if time.time() - start_time > 60:
-                          log("❌ Timeout: Torrent never appeared in client. Aborting.")
-                          sys.exit(1)
-                      time.sleep(2)
-                      continue
-                      
+                  if not torrents: 
+                      if time.time() - start_t > 60: sys.exit(1)
+                      time.sleep(2); continue
                   t = torrents[0]
-                  state = t.get('state', 'unknown')
-                  progress = t.get('progress', 0)
-                  name = t.get('name', 'Fetching_Metadata...')
-                  dl_speed = t.get('dlspeed', 0) / (1024 * 1024)
-                  peers = t.get('num_leechs', 0)
-                  seeds = t.get('num_seeds', 0)
-                  
-                  if progress > last_progress:
-                      start_time = time.time()
-                      last_progress = progress
-                  
-                  current_time = time.time()
-                  if current_time - last_log_time >= 10:
-                      log(f"🔄 State: [{state.upper()}] | Progress: {progress * 100:.2f}% | Speed: {dl_speed:.2f} MB/s | Seeds: {seeds} | Peers: {peers} | File: {name[:45]}")
-                      last_log_time = current_time
-                      
-                  if progress == 1.0 or state.endswith('UP') or state == 'uploading':
-                      log("\n✅ Download phase complete: Payload secured.")
-                      break
-                      
-                  if time.time() - start_time > 600:
-                      log("\n❌ Torrent stalled for 10 minutes with absolutely zero progress. Aborting.")
-                      sys.exit(1)
-                      
+                  state, progress = t.get('state'), t.get('progress', 0)
+                  speed = t.get('dlspeed', 0) / (1024*1024)
+                  if progress > last_p: start_t, last_p = time.time(), progress
+                  if time.time() - last_log >= 10:
+                      log(f"🔄 [{state.upper()}] | {progress*100:.2f}% | {speed:.2f} MB/s | Seeds: {t.get('num_seeds')} | Peers: {t.get('num_leechs')}")
+                      last_log = time.time()
+                  if progress == 1.0 or state in ['uploading', 'stalledUP', 'queuedUP']: break
+                  if time.time() - start_t > 600: 
+                      log("❌ Stalled for 10m. Check peer availability or .torrent file health."); sys.exit(1)
                   time.sleep(2)
-              except Exception as e:
-                  log(f"⚠️ API Polling Error: {e}")
-                  time.sleep(2)
+              except Exception as e: time.sleep(2)
           EOF_PY
-          
             python3 qbit_monitor.py "$TARGET_LINK"
-            
-            echo "🛑 Stopping qBittorrent daemon..."
             curl -s -X POST http://127.0.0.1:8085/api/v2/app/shutdown || true
-            sleep 3
             rm qbittorrent-nox
           fi
 
           echo "🛑 Disconnecting WARP Proxy..."
           warp-cli --accept-tos disconnect
 
-          echo "🔍 Scanning for standard ZIP files..."
-          while read -u 9 ZIP_FILE; do
-            unzip -q -o "$ZIP_FILE" -d workspace/ || true
-            rm "$ZIP_FILE"
-          done 9< <(find workspace -type f -name "*.zip")
-
-          echo "🔍 Scanning for Scene-style split RAR archives..."
-          while read -u 9 RAR_FILE; do
-            echo "📦 Found master archive: $RAR_FILE. Initiating extraction..."
-            unrar e -y "$RAR_FILE" workspace/ || echo "⚠️ unrar encountered a warning, but proceeding anyway..."
-            echo "🧹 Purging original archive sequence..."
-            RAR_DIR=$(dirname "$RAR_FILE")
-            rm -f "$RAR_DIR"/*.rar "$RAR_DIR"/*.r[0-9][0-9] "$RAR_DIR"/*.s[0-9][0-9] "$RAR_DIR"/*.sfv "$RAR_DIR"/*.nfo
-            rm -rf "$RAR_DIR/Sample" || true
+          # --- EXTRACTION ENGINE ---
+          echo "🔍 Processing archives..."
+          find workspace -type f -name "*.zip" -exec unzip -q -o {} -d workspace/ \; -exec rm {} \;
+          while read -u 9 RAR; do
+            echo "📦 Extracting: $RAR"
+            unrar e -y "$RAR" workspace/ || true
+            DIR=$(dirname "$RAR")
+            rm -f "$DIR"/*.rar "$DIR"/*.r[0-9][0-9] "$DIR"/*.s[0-9][0-9] "$DIR"/*.sfv "$DIR"/*.nfo
+            rm -rf "$DIR/Sample" || true
           done 9< <(find workspace -type f -name "*.rar")
 
-          VIDEO_COUNT=$(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l)
-          if [ "$VIDEO_COUNT" -eq 0 ]; then
-            echo "❌ No video files found in workspace after extraction."
-            exit 1
+          if [ $(find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) | wc -l) -eq 0 ]; then
+            echo "❌ No video files found." && exit 1
           fi
           
       - name: Generate Python Helper Scripts

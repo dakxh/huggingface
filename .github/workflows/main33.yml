@@ -36,16 +36,15 @@ jobs:
         run: |
           curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          
-          sudo apt-get update && sudo apt-get install -y ffmpeg libcurl4-openssl-dev jq unzip unrar cloudflare-warp[cite: 1]
-          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth tqdm[cite: 1]
+          sudo apt-get update && sudo apt-get install -y ffmpeg libcurl4-openssl-dev jq unzip unrar cloudflare-warp
+          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth tqdm
 
       - name: Acknowledge Payload
         id: payload_ack
         run: |
-          echo "Target acquired: ${{ inputs.target_link }}"[cite: 1]
-          echo "TARGET_LINK=${{ inputs.target_link }}" >> $GITHUB_ENV[cite: 1]
-          echo "found=true" >> $GITHUB_ENV[cite: 1]
+          echo "Target acquired: ${{ inputs.target_link }}"
+          echo "TARGET_LINK=${{ inputs.target_link }}" >> $GITHUB_ENV
+          echo "found=true" >> $GITHUB_ENV
 
       - name: Generate Pipeline Tooling
         if: env.found == 'true'
@@ -438,26 +437,26 @@ jobs:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
         run: |
           mkdir -p workspace
-          echo "🌐 Initializing Cloudflare WARP Proxy globally..."[cite: 1]
-          warp-cli --accept-tos registration new[cite: 1]
-          warp-cli --accept-tos mode proxy[cite: 1]
-          warp-cli --accept-tos connect[cite: 1]
+          echo "🌐 Initializing Cloudflare WARP Proxy globally..."
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos connect
 
           for i in {1..12}; do
             if curl -s -x socks5://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
-              break[cite: 1]
+              break
             fi
-            sleep 5[cite: 1]
+            sleep 5
           done
 
           IS_TORRENT=false
           if [[ "$TARGET_LINK" == magnet:* ]] || [[ "$TARGET_LINK" == *.torrent* ]]; then
-            IS_TORRENT=true[cite: 1]
+            IS_TORRENT=true
           fi
 
           if [[ "$TARGET_LINK" == *drive.google.com* ]] || [[ "$TARGET_LINK" == *drive.usercontent.google.com* ]]; then
             if [[ "$TARGET_LINK" == *\&at=* ]] || [[ "$TARGET_LINK" == *confirm=t* ]]; then
-              cd workspace && curl -# -L -OJ "$TARGET_LINK" && cd ..[cite: 1]
+              cd workspace && curl -# -L -OJ "$TARGET_LINK" && cd ..
             else
               cat << 'EOF' > gdrive_sa_dl.py
           import os, sys, re, json, requests
@@ -488,20 +487,20 @@ jobs:
               else: download_file(fid, res['name'])
           process_node(file_id)
           EOF
-              python gdrive_sa_dl.py "$TARGET_LINK"[cite: 1]
+              python gdrive_sa_dl.py "$TARGET_LINK"
             fi
 
           elif [[ "$IS_TORRENT" == "false" ]] && [[ "$TARGET_LINK" == http* ]]; then
-            HEADERS=$(curl -g -sIL -x socks5h://127.0.0.1:40000 -H 'User-Agent: Mozilla/5.0' "$TARGET_LINK" || true)[cite: 1]
+            HEADERS=$(curl -g -sIL -x socks5h://127.0.0.1:40000 -H 'User-Agent: Mozilla/5.0' "$TARGET_LINK" || true)
             SERVER_FILENAME=$(python3 -c "import sys, re, urllib.parse; h=sys.stdin.read(); m=re.search(r'(?i)filename\*?=(?:\"?UTF-8\'\'\"?)?([^\r\n;]+)', h); print(urllib.parse.unquote(m.group(1).strip(' \"\'')) if m else 'Archive_Payload.zip')" <<< "$HEADERS")
             
-            wget -qO yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux && chmod +x yt-dlp[cite: 1]
-            ./yt-dlp --proxy "socks5://127.0.0.1:40000" --add-header 'User-Agent: Mozilla/5.0' -N 16 -o "workspace/$SERVER_FILENAME" "$TARGET_LINK"[cite: 1]
+            wget -qO yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux && chmod +x yt-dlp
+            ./yt-dlp --proxy "socks5://127.0.0.1:40000" --add-header 'User-Agent: Mozilla/5.0' -N 16 -o "workspace/$SERVER_FILENAME" "$TARGET_LINK"
 
           else
-            wget -qO qbittorrent-nox https://github.com/userdocs/qbittorrent-nox-static/releases/latest/download/x86_64-qbittorrent-nox[cite: 1]
-            chmod +x qbittorrent-nox[cite: 1]
-            mkdir -p ~/.config/qBittorrent[cite: 1]
+            wget -qO qbittorrent-nox https://github.com/userdocs/qbittorrent-nox-static/releases/latest/download/x86_64-qbittorrent-nox
+            chmod +x qbittorrent-nox
+            mkdir -p ~/.config/qBittorrent
             
             cat << EOF_CONF > ~/.config/qBittorrent/qBittorrent.conf
           [Preferences]
@@ -524,7 +523,7 @@ jobs:
           Proxy\OnlyForTorrents=false
           EOF_CONF
 
-            ./qbittorrent-nox -d --confirm-legal-notice[cite: 1]
+            ./qbittorrent-nox -d --confirm-legal-notice
             
             cat << 'EOF_PY' > qbit_monitor.py
           import time, requests, sys
@@ -556,13 +555,13 @@ jobs:
                   time.sleep(2)
               except Exception as e: time.sleep(2)
           EOF_PY
-            python3 qbit_monitor.py "$TARGET_LINK"[cite: 1]
-            curl -s -X POST http://127.0.0.1:8085/api/v2/app/shutdown || true[cite: 1]
-            rm qbittorrent-nox[cite: 1]
+            python3 qbit_monitor.py "$TARGET_LINK"
+            curl -s -X POST http://127.0.0.1:8085/api/v2/app/shutdown || true
+            rm qbittorrent-nox
           fi
 
-          echo "🛑 Disconnecting WARP Proxy..."[cite: 1]
-          warp-cli --accept-tos disconnect[cite: 1]
+          echo "🛑 Disconnecting WARP Proxy..."
+          warp-cli --accept-tos disconnect
 
       - name: Mega-Loop Processing Engine
         if: env.found == 'true'
@@ -675,7 +674,7 @@ jobs:
           STATUS_MSG="✅ **Mega-Loop Pipeline Complete!** \n🎬 Successfully Processed & Synced: \`${TOTAL_EPS} Episodes\`\n🌐 Output distributed instantly across Hugging Face & Cloudflare D1."
           
           PAYLOAD=$(jq -n --arg content "$STATUS_MSG" '{content: $content}')
-          curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"[cite: 1]
+          curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"
 
       - name: Report Failure to Discord
         if: env.found == 'true' && failure()
@@ -683,6 +682,6 @@ jobs:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
         run: |
-          FAIL_MSG="❌ **Pipeline Failed!** \n🚨 The Torrent/Drive-to-HLS job crashed during execution.\n🔗 [View Action Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"[cite: 1]
-          PAYLOAD=$(jq -n --arg content "$FAIL_MSG" '{content: $content}')[cite: 1]
-          curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"[cite: 1]
+          FAIL_MSG="❌ **Pipeline Failed!** \n🚨 The Torrent/Drive-to-HLS job crashed during execution.\n🔗 [View Action Logs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+          PAYLOAD=$(jq -n --arg content "$FAIL_MSG" '{content: $content}')
+          curl -s -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"

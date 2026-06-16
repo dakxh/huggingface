@@ -122,8 +122,12 @@ jobs:
           elif [[ "$IS_TORRENT" == "false" ]] && [[ "$TARGET_LINK" == http* ]]; then
             # --- BRANCH 2: DIRECT HTTP (yt-dlp) ---
             echo "📎 Detected Direct HTTP Link. Using Global WARP Proxy..."
-            HEADERS=$(curl -sIL -x socks5h://127.0.0.1:40000 -H 'User-Agent: Mozilla/5.0' "$TARGET_LINK")
+            
+            # Added '-g' to disable URL globbing (fixes Exit Code 3 on brackets [])
+            # Added '|| true' failsafe so a header fetch failure doesn't crash the pipeline
+            HEADERS=$(curl -g -sIL -x socks5h://127.0.0.1:40000 -H 'User-Agent: Mozilla/5.0' "$TARGET_LINK" || true)
             SERVER_FILENAME=$(python3 -c "import sys, re, urllib.parse; h=sys.stdin.read(); m=re.search(r'(?i)filename\*?=(?:\"?UTF-8\'\'\"?)?([^\r\n;]+)', h); print(urllib.parse.unquote(m.group(1).strip(' \"\'')) if m else 'Direct_Payload.mkv')" <<< "$HEADERS")
+            
             wget -qO yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux && chmod +x yt-dlp
             ./yt-dlp --proxy "socks5://127.0.0.1:40000" --add-header 'User-Agent: Mozilla/5.0' -N 16 -o "workspace/$SERVER_FILENAME" "$TARGET_LINK"
 

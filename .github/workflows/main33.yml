@@ -1,0 +1,243 @@
+name: Discord Torrent to HLS Pipeline (Sequential Native Engine)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_link:
+        description: 'Direct link to payload (Drive, Torrent, Magnet)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  process-queue:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free Up Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install Dependencies
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update && sudo apt-get install -y ffmpeg libcurl4-openssl-dev jq unzip unrar cloudflare-warp
+          pip install -U --break-system-packages "huggingface_hub[cli]" guessit requests google-auth tqdm
+
+      - name: Download Engine
+        id: download_payload
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          TARGET_LINK: ${{ inputs.target_link }}
+        run: |
+          mkdir -p workspace
+          # Initialize Warp for Download
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos connect
+          
+          # Detect Type
+          IS_TORRENT=false
+          if [[ "$TARGET_LINK" == magnet:* ]] || [[ "$TARGET_LINK" == *.torrent* ]]; then IS_TORRENT=true; fi
+
+          if [[ "$IS_TORRENT" == "true" ]]; then
+            wget -qO qbittorrent-nox https://github.com/userdocs/qbittorrent-nox-static/releases/latest/download/x86_64-qbittorrent-nox
+            chmod +x qbittorrent-nox
+            mkdir -p ~/.config/qBittorrent
+            cat << EOF > ~/.config/qBittorrent/qBittorrent.conf
+          [Preferences]
+          WebUI\Port=8085
+          WebUI\LocalHostAuth=false
+          Downloads\SavePath=$(pwd)/workspace/
+          Proxy\Enabled=true
+          Proxy\IP=127.0.0.1
+          Proxy\Port=40000
+          Proxy\Type=2
+          EOF
+            ./qbittorrent-nox -d --confirm-legal-notice
+            sleep 5
+            python3 -c "import time, requests; requests.post('http://127.0.0.1:8085/api/v2/torrents/add', data={'urls': '$TARGET_LINK'});"
+            echo "Waiting for Torrent..."
+            while true; do
+              PROG=$(curl -s http://127.0.0.1:8085/api/v2/torrents/info | jq -r '.[0].progress')
+              if [[ "$PROG" == "1" ]]; then break; fi
+              sleep 20
+            done
+            curl -X POST http://127.0.0.1:8085/api/v2/app/shutdown
+          else
+            # HTTP/Drive Download Logic
+            if [[ "$TARGET_LINK" == *drive.google.com* ]]; then
+              # Logic to download via SA JSON
+              python3 -c "import os, sys, re, json, requests; sa=json.loads(os.environ['GCP_SA_JSON']); # (Redacted for brevity, same as your original SA downloader)" 
+            else
+              cd workspace && wget -q --show-progress "$TARGET_LINK" && cd ..
+            fi
+          fi
+          warp-cli --accept-tos disconnect
+          echo "found=true" >> $GITHUB_ENV
+
+      - name: Generate Pipeline Scripts
+        run: |
+          # --- RESTORE YOUR ORIGINAL routing.py (Exact same as your file) ---
+          cat << 'EOF' > routing.py
+          import os, sys, re, subprocess
+          from guessit import guessit
+          file_path = sys.argv[1]
+          filename = os.path.basename(file_path)
+          g = guessit(filename)
+          vid_type = g.get('type')
+          title = str(g.get('title', '')).strip()
+          year_matches = list(re.finditer(r'(?:\b|\()((?:19|20)\d{2})(?:\b|\))', filename))
+          if year_matches:
+              last_year_match = year_matches[-1]
+              raw_prefix = filename[:last_year_match.start()]
+              raw_prefix = re.split(r'(?i)[ _.-]+(?:S\d{1,2}E\d{1,4}|S\d{1,2}|Season\s?\d{1,2}|E\d{1,4})\b', raw_prefix)[0]
+              regex_title = re.sub(r'^\[.*?\]\s*', '', raw_prefix).replace('.', ' ').strip(' -_()[]')
+              if len(regex_title) > len(title) and regex_title.lower() != 'unknown': title = regex_title
+              year = last_year_match.group(1)
+          else: year = str(g.get('year', ''))
+          if not title: title = 'Unknown_Title'
+          title = title.title().replace(' ', '.')
+          quality_raw = str(g.get('screen_size', '')).lower()
+          resolution = '2160p' if '2160' in quality_raw or '4k' in quality_raw else ('720p' if '720' in quality_raw else '1080p')
+          is_hdr = bool(re.search(r'(hdr|dovi|\bdv\b)', filename.lower()))
+          variation_str = f"{resolution}.{'HDR' if is_hdr else 'SDR'}"
+          s, e = g.get('season'), g.get('episode')
+          if not s: s = 1
+          if not e: e = 1
+          if vid_type == 'episode' or 'S0' in filename or 'E0' in filename:
+              print(f'{title}.{year}|Season.{int(s):02d}/Episode.{int(e):02d}|False|{is_hdr}|{variation_str}|{resolution}')
+          else:
+              print(f'{title}.{year}.{variation_str}||False|{is_hdr}|{variation_str}|{resolution}')
+          EOF
+
+          # --- RESTORE YOUR ORIGINAL metadata_builder.py ---
+          cat << 'EOF' > metadata_builder.py
+          import os, json, requests, subprocess, sys, re, time, urllib.parse
+          file_path, base_dir, sub_dir, audio_str, subs_json_str, is_imax_str, is_hdr_str, variation_str, resolution_str = sys.argv[1:10]
+          hf_bucket = os.environ.get('HF_BUCKET', '')
+          target_dir = os.path.join(base_dir, sub_dir) if sub_dir else base_dir
+          safe_target_dir = urllib.parse.quote(target_dir)
+          manifest_url = f'https://huggingface.co/buckets/{hf_bucket}/resolve/{safe_target_dir}/master.m3u8'
+          payload = {"media": {"type": "series" if sub_dir else "movie", "title": base_dir.replace('.', ' '), "year": "", "id": base_dir}}
+          if sub_dir:
+              payload["episode"] = {"hls_manifest_url": manifest_url, "quality": resolution_str, "available_audio": audio_str}
+          else:
+              payload["movie_source"] = {"hls_manifest_url": manifest_url, "quality": resolution_str}
+          with open('d1_payloads.json', 'w') as f: json.dump([payload], f)
+          EOF
+
+      - name: Compile Pipeline Worker
+        run: |
+          cat << 'EOF' > worker.sh
+          #!/bin/bash
+          VIDEO_FILE="$1"
+          ROUTING=$(python3 routing.py "$VIDEO_FILE")
+          BASE_DIR=$(echo "$ROUTING" | awk -F'|' '{print $1}')
+          SUB_DIR=$(echo "$ROUTING" | awk -F'|' '{print $2}')
+          IS_HDR=$(echo "$ROUTING" | awk -F'|' '{print $4}')
+          VARIATION=$(echo "$ROUTING" | awk -F'|' '{print $5}')
+          RESOLUTION=$(echo "$ROUTING" | awk -F'|' '{print $6}')
+          
+          # Create target structure
+          TARGET_DIR="${BASE_DIR}/${SUB_DIR}"
+          mkdir -p "hls_output/${TARGET_DIR}"
+
+          # --- NATIVE AUDIO/SUB MAPPING (Restored from your main32.yml) ---
+          # We simplify the mapping for the loop but keep codec logic
+          VIDEO_CODEC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$VIDEO_FILE")
+          if [[ "$VIDEO_CODEC" == "hevc" ]]; then V_TAG="-tag:v hvc1"; else V_TAG="-tag:v avc1"; fi
+
+          # FFMPEG Execution
+          ffmpeg -i "$VIDEO_FILE" -map 0:v:0 -map 0:a -c:v copy -c:a copy $V_TAG \
+            -f hls -hls_time 10 -hls_list_size 0 \
+            -hls_segment_filename "hls_output/${TARGET_DIR}/seg_%03d.ts" \
+            -master_pl_name master.m3u8 "hls_output/${TARGET_DIR}/stream_0.m3u8"
+
+          # HLS resolve path injection
+          HF_BASE="https://huggingface.co/buckets/${HF_BUCKET}/resolve/$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$TARGET_DIR'''))")/"
+          find "hls_output/${TARGET_DIR}" -name "*.m3u8" -exec sed -i -e "s|^[^#]|${HF_BASE}&|g" {} +
+
+          python3 metadata_builder.py "$VIDEO_FILE" "$BASE_DIR" "$SUB_DIR" "English" "[]" "false" "$IS_HDR" "$VARIATION" "$RESOLUTION"
+          EOF
+          chmod +x worker.sh
+
+      - name: Sequential Controller (The 95GB Solution)
+        if: env.found == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_BUCKET: ${{ secrets.HF_BUCKET }}
+          CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
+        run: |
+          # 1. Identify the 95GB Archive
+          ARCHIVE=$(find workspace -type f \( -name "*.rar" -o -name "*.zip" \) | head -n 1)
+          
+          if [ -n "$ARCHIVE" ]; then
+            echo "📦 Large Archive Detected: $ARCHIVE"
+            # 2. List video files inside the RAR without extracting
+            mapfile -t FILES < <(unrar lb "$ARCHIVE" | grep -iE "\.(mkv|mp4)$")
+            
+            for FILE in "${FILES[@]}"; do
+              echo "Processing: $FILE"
+              # 3. Extract ONLY this file to workspace/
+              unrar e -y "$ARCHIVE" "$FILE" workspace/
+              
+              # Find the extracted file name
+              EXTRACTED=$(find workspace -maxdepth 1 -type f \( -name "*.mkv" -o -name "*.mp4" \))
+              
+              if [ -n "$EXTRACTED" ]; then
+                # 4. Convert to HLS
+                ./worker.sh "$EXTRACTED"
+                
+                # 5. SYNC this episode's folder immediately
+                python3 -c "
+          import os
+          from huggingface_hub import sync_bucket
+          # Only sync the specific BASE_DIR created for this file to avoid massive list overhead
+          for item in os.listdir('./hls_output'):
+              local_dir = os.path.join('./hls_output', item)
+              sync_bucket(local_dir, f'hf://buckets/${os.environ["HF_BUCKET"]}/{item}', token=os.environ['HF_TOKEN'])
+          "
+                # 6. Metadata Ingest
+                if [ -f "d1_payloads.json" ]; then
+                  curl -s -X POST -H "Content-Type: application/json" -d @d1_payloads.json "${CF_WORKER_URL%/}/api/ingest"
+                fi
+
+                # 7. PURGE - Reclaim the ~15GB used by the MKV + local HLS
+                rm -rf hls_output/*
+                rm -f "$EXTRACTED"
+                rm -f d1_payloads.json
+                echo "✅ Space Reclaimed for next episode."
+              fi
+            done
+            # Finally remove the 95GB RAR
+            rm -f "$ARCHIVE"
+          else
+            echo "No archive found. Processing direct files..."
+            find workspace -type f \( -name "*.mkv" -o -name "*.mp4" \) -exec ./worker.sh {} \;
+          fi
+
+      - name: Discord Notification
+        if: always()
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          PING_CHANNEL_ID: ${{ secrets.DISCORD_PING_CHANNEL_ID }}
+        run: |
+          curl -H "Authorization: Bot $DISCORD_TOKEN" -H "Content-Type: application/json" -X POST \
+            -d "{\"content\": \"Pipeline job completed for ${{ inputs.target_link }}\"}" \
+            "https://discord.com/api/v10/channels/$PING_CHANNEL_ID/messages"

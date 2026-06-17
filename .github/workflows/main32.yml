@@ -477,7 +477,7 @@ jobs:
           FIRST_SUB=1
           
           LANG_REGEX="(^|[^a-z])(en|eng|english)([^a-z]|$)"
-          AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean|zh|zho|chi|chinese|th|tha|thai|de|deu|ger|german|ru|rus|russia|russian)([^a-z]|$)"
+          AUDIO_LANG_REGEX="(^|[^a-z])(en|eng|english|hi|hin|hindi|te|tel|telugu|ja|jap|jpn|japan|japanese|ko|kor|korean|zh|zho|chi|chinese|th|tha|thai|de|deu|ger|german|ru|rus|russia|russian|fa|fas|per|persian|farsi)([^a-z]|$)"
           
           while IFS=',' read -r index ctype lang title; do
             if [[ "$ctype" == "audio" ]]; then

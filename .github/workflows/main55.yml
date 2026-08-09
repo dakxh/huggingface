@@ -346,19 +346,16 @@ jobs:
           
           python3 -c "
           import os
-          from huggingface_hub import HfFileSystem
+          from huggingface_hub import batch_bucket_files
           
           token = os.environ.get('HF_TOKEN')
           bucket = os.environ.get('HF_BUCKET')
-          fs = HfFileSystem(token=token)
           
           folder = './processed_media'
           for item in os.listdir(folder):
               local_path = os.path.join(folder, item)
               if os.path.isfile(local_path):
-                  # Construct exact HF bucket path format retained from original framework
-                  remote_path = f'hf://buckets/{bucket}/{item}'
-                  print(f'⚡ Uploading {item} to {remote_path}...')
-                  fs.put(local_path, remote_path)
+                  print(f'⚡ Uploading {item} to {bucket}...')
+                  batch_bucket_files(bucket, add=[(local_path, item)], token=token)
           "
-          echo "✅ File uploaded successfully to Cloud CDN."
+          echo "✅ File uploaded successfully to Cloud Storage Bucket."
